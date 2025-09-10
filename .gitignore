@@ -113,3 +113,4 @@ wvdutil/lint.bat
 wvdutil/unscramble.py
 .vs/slnx.sqlite
 wangemu
+.vs/

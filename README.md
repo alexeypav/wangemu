@@ -47,6 +47,34 @@ Traditionally, on each release, a zip file containing the source
 code, some notes, and a precompiled binary has been published to
 the website's [emu.html](http://www.wang2200.org/emu.html) page.
 
+Building on Windows
+----------
+This project requires wxWidgets 3.1.7 to compile. Follow these steps:
+
+1. **Download wxWidgets 3.1.7:**
+   - Download the following files from https://www.wxwidgets.org/downloads/:
+     - wxWidgets-3.1.7-headers.7z
+     - wxMSW-3.1.7_vc14x_Dev.7z  
+     - wxMSW-3.1.7_vc14x_ReleaseDLL.7z
+
+2. **Install wxWidgets:**
+   - Extract all files to `C:\wxWidgets-3.1.7`
+   - Set environment variable: `WXWIN=C:\wxWidgets-3.1.7`
+   - Restart Visual Studio
+
+3. **Copy Runtime DLLs:**
+   After compiling, copy the required DLLs from `C:\wxWidgets-3.1.7\lib\vc14x_dll\` to your output directory:
+
+   **For Debug builds:**
+   - wxbase317ud_vc14x.dll
+   - wxmsw317ud_core_vc14x.dll
+   - wxmsw317ud_adv_vc14x.dll
+
+   **For Release builds:**
+   - wxbase317u_vc14x.dll
+   - wxmsw317u_core_vc14x.dll
+   - wxmsw317u_adv_vc14x.dll
+
 License
 ----------
 Historically the source code has not had any explicit license,
