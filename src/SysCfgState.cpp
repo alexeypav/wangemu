@@ -144,6 +144,11 @@ SysCfgState::setDefaults()
     setRamKB(32);
     setDiskRealtime(true);
     setWarnIo(true);
+    
+    // Set COM port defaults for 2236WD terminal mode
+    setComPortName("COM6");
+    setComBaudRate(19200);
+    setComFlowControl(true);
 
     // wipe out all cards
     for (int slot=0; slot < NUM_IOSLOTS; slot++) {
@@ -261,6 +266,24 @@ SysCfgState::loadIni()
         setWarnIo(bval);  // default
     }
 
+    // load COM port settings for 2236WD terminal mode
+    {
+        const std::string subgroup("com_terminal");
+        std::string sval;
+        int ival;
+        bool bval;
+
+        std::string defaultPort = "COM1";
+        host::configReadStr(subgroup, "port_name", &sval, &defaultPort);
+        setComPortName(sval);
+
+        host::configReadInt(subgroup, "baud_rate", &ival, 19200);
+        setComBaudRate(ival);
+
+        host::configReadBool(subgroup, "flow_control", &bval, true);
+        setComFlowControl(bval);
+    }
+
     m_initialized = true;
 }
 
@@ -314,6 +337,14 @@ SysCfgState::saveIni() const
         const std::string subgroup("misc");
         host::configWriteBool(subgroup, "disk_realtime", getDiskRealtime());
         host::configWriteBool(subgroup, "warnio",        getWarnIo());
+    }
+
+    // save COM port settings for 2236WD terminal mode
+    {
+        const std::string subgroup("com_terminal");
+        host::configWriteStr(subgroup, "port_name",     getComPortName());
+        host::configWriteInt(subgroup, "baud_rate",     getComBaudRate());
+        host::configWriteBool(subgroup, "flow_control", getComFlowControl());
     }
 }
 
@@ -415,6 +446,48 @@ bool
 SysCfgState::getWarnIo() const noexcept
 {
     return m_warn_io;
+}
+
+
+void
+SysCfgState::setComPortName(const std::string &name) noexcept
+{
+    m_com_port_name = name;
+}
+
+
+std::string
+SysCfgState::getComPortName() const noexcept
+{
+    return m_com_port_name;
+}
+
+
+void
+SysCfgState::setComBaudRate(int rate) noexcept
+{
+    m_com_baud_rate = rate;
+}
+
+
+int
+SysCfgState::getComBaudRate() const noexcept
+{
+    return m_com_baud_rate;
+}
+
+
+void
+SysCfgState::setComFlowControl(bool flow_control) noexcept
+{
+    m_com_flow_control = flow_control;
+}
+
+
+bool
+SysCfgState::getComFlowControl() const noexcept
+{
+    return m_com_flow_control;
 }
 
 

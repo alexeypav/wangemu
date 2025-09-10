@@ -26,7 +26,7 @@
 
 #include "IoCardKeyboard.h"
 #include "IoCardTermMux.h"
-//#include "SerialPort.h"
+#include "SerialPort.h"
 #include "Scheduler.h"
 #include "Terminal.h"
 #include "Ui.h"
@@ -81,43 +81,43 @@ Terminal::Terminal(std::shared_ptr<Scheduler> scheduler,
 }
 
 // Constructor for COM port terminal mode
-// Terminal::Terminal(std::shared_ptr<Scheduler> scheduler,
-//                    std::shared_ptr<SerialPort> serialPort,
-//                    int io_addr, int term_num, ui_screen_t screen_type) :
-//     m_scheduler(scheduler),
-//     m_muxd(nullptr),
-//     m_serialPort(serialPort),
-//     m_vp_cpu(false),  // COM port terminals don't need CPU throttling
-//     m_io_addr(io_addr),
-//     m_term_num(term_num)
-// {
-//     m_disp.screen_type = screen_type;
-//     m_disp.chars_w  = (screen_type == UI_SCREEN_64x16)  ? 64 : 80;
-//     m_disp.chars_h  = (screen_type == UI_SCREEN_64x16)  ? 16 : 24;
-//     m_disp.chars_h2 = (screen_type == UI_SCREEN_2236DE) ? 25 : m_disp.chars_h;
+Terminal::Terminal(std::shared_ptr<Scheduler> scheduler,
+                   std::shared_ptr<SerialPort> serialPort,
+                   int io_addr, int term_num, ui_screen_t screen_type) :
+    m_scheduler(scheduler),
+    m_muxd(nullptr),
+    m_serialPort(serialPort),
+    m_vp_cpu(false),  // COM port terminals don't need CPU throttling
+    m_io_addr(io_addr),
+    m_term_num(term_num)
+{
+    m_disp.screen_type = screen_type;
+    m_disp.chars_w  = (screen_type == UI_SCREEN_64x16)  ? 64 : 80;
+    m_disp.chars_h  = (screen_type == UI_SCREEN_64x16)  ? 16 : 24;
+    m_disp.chars_h2 = (screen_type == UI_SCREEN_2236DE) ? 25 : m_disp.chars_h;
 
-//     reset(true);
+    reset(true);
 
-//     m_wndhnd = UI_displayInit(screen_type, m_io_addr, m_term_num, &m_disp);
-//     assert(m_wndhnd);
+    m_wndhnd = UI_displayInit(screen_type, m_io_addr, m_term_num, &m_disp);
+    assert(m_wndhnd);
 
-//     const bool smart_term = (screen_type == UI_SCREEN_2236DE);
-//     if (smart_term) {
-//         // Register keyboard callback for COM port mode
-//         // Use a unique address for COM terminals to avoid conflicts
-//         int kb_addr = 0x1000 + io_addr; // Use high address space for COM terminals
-//         system2200::registerKb(
-//             kb_addr, m_term_num,
-//             std::bind(&Terminal::receiveKeystroke, this, std::placeholders::_1)
-//         );
+    const bool smart_term = (screen_type == UI_SCREEN_2236DE);
+    if (smart_term) {
+        // Register keyboard callback for COM port mode
+        // Use a unique address for COM terminals to avoid conflicts
+        int kb_addr = 0x1000 + io_addr; // Use high address space for COM terminals
+        system2200::registerKb(
+            kb_addr, m_term_num,
+            std::bind(&Terminal::receiveKeystroke, this, std::placeholders::_1)
+        );
 
-//         // COM port terminals send init sequence immediately
-//         m_init_tmr = m_scheduler->createTimer(
-//                        TIMER_MS(100),
-//                        std::bind(&Terminal::sendInitSeq, this)
-//                      );
-//     }
-// }
+        // COM port terminals send init sequence immediately
+        m_init_tmr = m_scheduler->createTimer(
+                       TIMER_MS(100),
+                       std::bind(&Terminal::sendInitSeq, this)
+                     );
+    }
+}
 
 // free resources on destruction
 Terminal::~Terminal()
@@ -420,17 +420,17 @@ Terminal::termToMxdCallback(int key)
 {
     m_tx_tmr = nullptr;
     
-    // if (m_muxd) {
+    if (m_muxd) {
         // Original MUX mode - send to Wang 2200 CPU
         m_muxd->receiveKeystroke(m_term_num, key);
         
         // poll for script input, but don't let it overrun the key buffer
         if (m_kb_buff.size() < 5) {
             m_script_active = system2200::pollScriptInput(m_io_addr+0x01, m_term_num);
-    //     }
-    // } else if (m_serialPort) {
-    //     // COM port mode - send to real Wang 2200 via serial port
-    //     m_serialPort->sendByte(static_cast<uint8>(key));
+        }
+    } else if (m_serialPort) {
+        // COM port mode - send to real Wang 2200 via serial port
+        m_serialPort->sendByte(static_cast<uint8>(key));
     }
 
     // see if any other chars are pending

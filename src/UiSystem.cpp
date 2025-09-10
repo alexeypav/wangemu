@@ -348,6 +348,7 @@ UI_displayInit(const int screen_type, const int io_addr, const int term_num,
                         : (cpu_type == Cpu2200::CPUTYPE_MVP)     ? "2200MVP"
                         : (cpu_type == Cpu2200::CPUTYPE_MVPC)    ? "2200MVP-C"
                         : (cpu_type == Cpu2200::CPUTYPE_MICROVP) ? "MicroVP"
+                        : (cpu_type == Cpu2200::CPUTYPE_2236WD)  ? "2236WD Terminal"
                                                                  : "unknown cpu";
 
     const char *disp_str = "unknown";

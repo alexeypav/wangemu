@@ -62,7 +62,7 @@
       <Optimization>MaxSpeed</Optimization>
       <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
       <AdditionalIncludeDirectories>$(WXWIN)\include;$(WXWIN)\lib\vc14x_dll\mswu;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>WIN32;__WXMSW__;WXUSINGDLL;_WINDOWS;_CRT_SECURE_NO_WARNINGS=1;_BIND_TO_CURRENT_CRT_VERSION=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;__WXMSW__;WXUSINGDLL;_WINDOWS;_CRT_SECURE_NO_WARNINGS=1;_BIND_TO_CURRENT_CRT_VERSION=1;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -164,6 +164,7 @@
     <ClCompile Include="src\IoCardTermMux.cpp" />
     <ClCompile Include="src\Scheduler.cpp" />
     <ClCompile Include="src\ScriptFile.cpp" />
+    <ClCompile Include="src\SerialPort.cpp" />
     <ClCompile Include="src\SysCfgState.cpp" />
     <ClCompile Include="src\system2200.cpp" />
     <ClCompile Include="src\Terminal.cpp" />
