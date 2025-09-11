@@ -11,6 +11,14 @@
 #include <iostream>
 #include <cassert>
 
+static std::wstring toWinComPath(const std::string& name) {
+    std::wstring w(name.begin(), name.end());
+    if (w.rfind(L"COM", 0) == 0 && w.size() > 4) {
+        return L"\\\\.\\" + w; // COM10 → \\.\COM10
+    }
+    return w;
+}
+
 SerialPort::SerialPort(std::shared_ptr<Scheduler> scheduler) :
     m_scheduler(scheduler),
     m_handle(INVALID_HANDLE_VALUE),
@@ -53,8 +61,9 @@ bool SerialPort::open(const SerialConfig &config)
     m_config = config;
     
     // Open the COM port
-    m_handle = CreateFileA(
-        config.portName.c_str(),
+    std::wstring path = toWinComPath(config.portName);
+    m_handle = CreateFileW(
+        path.c_str(),
         GENERIC_READ | GENERIC_WRITE,
         0,                      // exclusive access
         nullptr,                // default security

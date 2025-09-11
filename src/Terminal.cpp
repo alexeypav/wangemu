@@ -105,7 +105,7 @@ Terminal::Terminal(std::shared_ptr<Scheduler> scheduler,
     if (smart_term) {
         // Register keyboard callback for COM port mode
         // Use a unique address for COM terminals to avoid conflicts
-        int kb_addr = 0x1000 + io_addr; // Use high address space for COM terminals
+        int kb_addr = 0x01;
         system2200::registerKb(
             kb_addr, m_term_num,
             std::bind(&Terminal::receiveKeystroke, this, std::placeholders::_1)
@@ -129,7 +129,7 @@ Terminal::~Terminal()
             system2200::unregisterKb(m_io_addr+0x01, m_term_num);
         } else if (m_serialPort) {
             // COM port mode
-            int kb_addr = 0x1000 + m_io_addr;
+            int kb_addr = 0x01;
             system2200::unregisterKb(kb_addr, m_term_num);
         }
     }
