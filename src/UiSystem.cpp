@@ -33,6 +33,8 @@ struct crt_state_t;
 
 #include "wx/cmdline.h"         // req'd by wxCmdLineParser
 #include "wx/filename.h"
+#include <wx/app.h>
+#include <wx/thread.h>
 
 // ============================================================================
 // implementation
@@ -386,10 +388,20 @@ UI_displayDestroy(CrtFrame *wnd)
 
 
 // create a bell (0x07) sound for the given terminal
-void UI_displayDing(CrtFrame *wnd)
+void
+UI_displayDing(CrtFrame *wnd)
 {
     assert(wnd != nullptr);
-    wnd->ding();
+    // If we're already on the UI thread, call directly.
+    if (wxThread::IsMain()) {
+        wnd->ding();
+        return;
+    }
+    // Otherwise, marshal to the main thread.
+    wxTheApp->CallAfter([wnd]{
+        // wnd is owned by the UI, so this is safe once we're on the UI thread.
+        wnd->ding();
+    });
 }
 
 
