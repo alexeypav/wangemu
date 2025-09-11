@@ -11,6 +11,10 @@
 #include "host.h"
 #include "system2200.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include <sstream>
 
 // ------------------------------------------------------------------------
@@ -64,6 +68,11 @@ SysCfgState::operator=(const SysCfgState &rhs)
     regulateCpuSpeed(rhs.isCpuSpeedRegulated());
     setDiskRealtime(rhs.getDiskRealtime());
     setWarnIo(rhs.getWarnIo());
+    
+    // Copy COM terminal settings for 2236WD terminal mode
+    setComPortName(rhs.getComPortName());
+    setComBaudRate(rhs.getComBaudRate());
+    setComFlowControl(rhs.getComFlowControl());
 
     return *this;
 }
@@ -90,6 +99,12 @@ SysCfgState::SysCfgState(const SysCfgState &obj)
     m_speed_regulated = obj.m_speed_regulated;
     m_disk_realtime   = obj.m_disk_realtime;
     m_warn_io         = obj.m_warn_io;
+    
+    // Copy COM terminal settings for 2236WD terminal mode
+    m_com_port_name    = obj.m_com_port_name;
+    m_com_baud_rate    = obj.m_com_baud_rate;
+    m_com_flow_control = obj.m_com_flow_control;
+    
     m_initialized     = true;
 }
 
@@ -273,15 +288,25 @@ SysCfgState::loadIni()
         int ival;
         bool bval;
 
-        std::string defaultPort = "COM1";
-        host::configReadStr(subgroup, "port_name", &sval, &defaultPort);
+        std::string defaultPort = "COM5";
+        bool port_found = host::configReadStr(subgroup, "port_name", &sval, &defaultPort);
         setComPortName(sval);
+        
+        // Debug logging to track configuration loading
+        char debug_msg[256];
+        sprintf(debug_msg, "DEBUG: COM terminal config - port_name found: %s, value: %s\n", 
+                port_found ? "YES" : "NO", sval.c_str());
+        OutputDebugStringA(debug_msg);
 
         host::configReadInt(subgroup, "baud_rate", &ival, 19200);
         setComBaudRate(ival);
+        sprintf(debug_msg, "DEBUG: COM terminal config - baud_rate: %d\n", ival);
+        OutputDebugStringA(debug_msg);
 
         host::configReadBool(subgroup, "flow_control", &bval, true);
         setComFlowControl(bval);
+        sprintf(debug_msg, "DEBUG: COM terminal config - flow_control: %s\n", bval ? "true" : "false");
+        OutputDebugStringA(debug_msg);
     }
 
     m_initialized = true;

@@ -232,15 +232,43 @@ createTerminalMode()
     config.stopBits = ONESTOPBIT;
     config.flowControl = current_cfg->getComFlowControl();
     
+    char debug_msg[256];
+    sprintf(debug_msg, "DEBUG: Terminal config - trying configured port: %s at %d baud\n", 
+            config.portName.c_str(), config.baudRate);
+    OutputDebugStringA(debug_msg);
+    
     // Try to open the serial port
     if (!terminal_serial_port->open(config)) {
-        // If COM1 fails, try other common ports
+        sprintf(debug_msg, "DEBUG: Configured port %s failed, trying fallback ports\n", config.portName.c_str());
+        OutputDebugStringA(debug_msg);
+        
+        // Remember the user's configured port
+        std::string original_port = config.portName;
+        
+        // If configured port fails, try other common ports
         const char* fallback_ports[] = {"COM2", "COM3", "COM4", "COM5", "COM6", nullptr};
         bool opened = false;
         
         for (int i = 0; fallback_ports[i] && !opened; i++) {
+            // Skip if this is the same as the configured port (already tried)
+            if (fallback_ports[i] == original_port) {
+                continue;
+            }
+            
             config.portName = fallback_ports[i];
             opened = terminal_serial_port->open(config);
+            
+            if (opened) {
+                sprintf(debug_msg, "DEBUG: Fallback port %s opened successfully\n", config.portName.c_str());
+                OutputDebugStringA(debug_msg);
+                
+                // Update ONLY the port name in configuration, preserve baud rate and flow control
+                current_cfg->setComPortName(config.portName);
+                
+                sprintf(debug_msg, "DEBUG: Updated config to use working port %s, keeping baud rate %d\n", 
+                        config.portName.c_str(), config.baudRate);
+                OutputDebugStringA(debug_msg);
+            }
         }
         
         if (!opened) {
@@ -249,6 +277,9 @@ createTerminalMode()
                      "Please check COM port configuration and ensure a port is available.");
             // Continue without serial port - terminal will work in display-only mode
         }
+    } else {
+        sprintf(debug_msg, "DEBUG: Configured port %s opened successfully\n", config.portName.c_str());
+        OutputDebugStringA(debug_msg);
     }
     
     // Create Wang 2236DE terminal with serial port using the COM port constructor
@@ -440,6 +471,12 @@ system2200::setConfig(const SysCfgState &new_cfg)
 
     // save the new system configuration state
     *current_cfg = new_cfg;
+    
+    // Debug: Check if configuration was copied correctly
+    char debug_msg[256];
+    sprintf(debug_msg, "DEBUG: After config copy - port: %s, baud: %d\n", 
+            current_cfg->getComPortName().c_str(), current_cfg->getComBaudRate());
+    OutputDebugStringA(debug_msg);
 
     // (re)build the CPU
     const int ram_size = (current_cfg->getRamKB()) * 1024;

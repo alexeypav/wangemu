@@ -117,7 +117,7 @@ private:
     bool m_warn_io         = true;  // boolean whether to warn on access to invalid IO device
     
     // -------------- 2236WD terminal COM port settings --------------
-    std::string m_com_port_name = "COM1";  // COM port for 2236WD terminal mode
+    std::string m_com_port_name = "COM1";  // COM port for 2236WD terminal mode  
     int         m_com_baud_rate = 19200;   // Baud rate for COM port
     bool        m_com_flow_control = true; // Hardware flow control enabled
 };
