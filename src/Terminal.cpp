@@ -111,11 +111,11 @@ Terminal::Terminal(std::shared_ptr<Scheduler> scheduler,
             std::bind(&Terminal::receiveKeystroke, this, std::placeholders::_1)
         );
 
-        // COM port terminals send init sequence immediately
+        // Delay the power-on init a bit to ensure COM is fully stable
         m_init_tmr = m_scheduler->createTimer(
-                       TIMER_MS(100),
-                       std::bind(&Terminal::sendInitSeq, this)
-                     );
+            TIMER_MS(600),
+            std::bind(&Terminal::sendInitSeq, this)
+        );
     }
 }
 
@@ -272,7 +272,8 @@ void
 Terminal::receiveKeystroke(int keycode)
 {
     if (m_kb_buff.size() >= KB_BUFF_MAX) {
-        UI_warn("the terminal keyboard buffer dropped a character");
+        UI_warn("the terminal keyboard buffer dropped a character (buffer size: %d, keycode: 0x%02X)", 
+                static_cast<int>(m_kb_buff.size()), keycode);
         return;
     }
 
@@ -430,6 +431,8 @@ Terminal::termToMxdCallback(int key)
         }
     } else if (m_serialPort) {
         // COM port mode - send to real Wang 2200 via serial port
+        dbglog("Terminal::termToMxdCallback() - Sending byte 0x%02X ('%c') via COM port\n",
+               key, (key >= 0x20 && key <= 0x7E) ? key : '.');
         m_serialPort->sendByte(static_cast<uint8>(key));
     }
 

@@ -653,17 +653,69 @@ system2200::onIdle()
     // on emulator performance.
     static const int slice_duration = 30;   // in ms
 
-    switch (getTerminationState()) {
-        case RUNNING:
-            // this is the normal case during emulation
-            if (m_freeze_emu) {
-                // if we don't call sleep, we just get another onIdle event
-                // and end up pegging the host CPU
-                host::sleep(10);
-            } else {
-                emulateTimeslice(slice_duration);
+
+switch (getTerminationState()) {
+case RUNNING: {
+    if (m_freeze_emu) {
+        host::sleep(10);
+    }
+    else {
+        // Terminal CPU (2236WD): no CPU, but we need timers.
+        if (!cpu) {
+            static bool   s_term_tick_ready = false;
+            static bool   s_term_tick_disabled = false;
+            static uint64 s_stable_since_ms = 0;
+
+            if (!s_term_tick_disabled) {
+                const bool have_sched = (scheduler != nullptr);
+                const bool have_term = (terminal != nullptr);
+                const bool have_port = (terminal_serial_port != nullptr)
+                    && terminal_serial_port->isOpen();
+                const bool ready_now = have_sched && have_term && have_port;
+
+                const uint64 now_ms = host::getTimeMs();
+
+                if (ready_now) {
+                    if (s_stable_since_ms == 0) s_stable_since_ms = now_ms;
+                    // wait a bit after open to avoid early-race callbacks
+                    if (!s_term_tick_ready && (now_ms - s_stable_since_ms) >= 600) {
+                        s_term_tick_ready = true;
+                    }
+                }
+                else {
+                    s_stable_since_ms = 0;
+                    s_term_tick_ready = false;
+                }
+
+                if (s_term_tick_ready
+                    && scheduler->hasPendingTimers()) {
+                    try {
+                        const uint32 ns = static_cast<uint32>(slice_duration) * 1000000u;
+                        scheduler->timerTick(ns);
+                    }
+                    catch (const std::exception& e) {
+                        s_term_tick_disabled = true;
+                        dbglog("Terminal-mode timerTick exception: %s", e.what());
+                    }
+                    catch (...) {
+                        s_term_tick_disabled = true;
+                        dbglog("Terminal-mode timerTick unknown exception");
+                    }
+                }
             }
-            return true;        // want more idle events
+
+            host::sleep(0);
+        }
+        else {
+            // normal emulation path
+            emulateTimeslice(slice_duration);
+        }
+    }
+    return true;
+}
+
+
+        
         case TERMINATING:
             // we've been signaled to shut down the universe.
             // change the flag to know we've already cleaned up, in case

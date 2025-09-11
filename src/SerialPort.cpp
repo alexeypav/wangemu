@@ -8,8 +8,11 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#include <iostream>
 #include <cassert>
+#include <string>
+#include <thread>
+#include <mutex>
+#include <queue>
 
 static std::wstring toWinComPath(const std::string& name) {
     std::wstring w(name.begin(), name.end());
@@ -20,36 +23,26 @@ static std::wstring toWinComPath(const std::string& name) {
 }
 
 SerialPort::SerialPort(std::shared_ptr<Scheduler> scheduler) :
-    m_scheduler(scheduler),
+    m_scheduler(std::move(scheduler)),
     m_handle(INVALID_HANDLE_VALUE),
     m_stopReceiving(false),
-    m_txBusy(false)
+    m_txBusy(false),
+    m_txTimer(nullptr)
 {
-    // Initialize overlapped structures
-    memset(&m_readOverlapped, 0, sizeof(m_readOverlapped));
-    memset(&m_writeOverlapped, 0, sizeof(m_writeOverlapped));
-    
-    // Create events for overlapped I/O
-    m_readEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+    // init OVERLAPPED + manual-reset events
+    ZeroMemory(&m_readOverlapped,  sizeof(m_readOverlapped));
+    ZeroMemory(&m_writeOverlapped, sizeof(m_writeOverlapped));
+    m_readEvent  = CreateEvent(nullptr, TRUE, FALSE, nullptr);
     m_writeEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
-    
-    m_readOverlapped.hEvent = m_readEvent;
+    m_readOverlapped.hEvent  = m_readEvent;
     m_writeOverlapped.hEvent = m_writeEvent;
 }
 
 SerialPort::~SerialPort()
 {
     close();
-    
-    if (m_readEvent != nullptr) {
-        CloseHandle(m_readEvent);
-        m_readEvent = nullptr;
-    }
-    
-    if (m_writeEvent != nullptr) {
-        CloseHandle(m_writeEvent);
-        m_writeEvent = nullptr;
-    }
+    if (m_readEvent)  { CloseHandle(m_readEvent);  m_readEvent  = nullptr; }
+    if (m_writeEvent) { CloseHandle(m_writeEvent); m_writeEvent = nullptr; }
 }
 
 bool SerialPort::open(const SerialConfig &config)
@@ -57,154 +50,157 @@ bool SerialPort::open(const SerialConfig &config)
     if (isOpen()) {
         close();
     }
-    
+
     m_config = config;
-    
-    // Open the COM port
+
     std::wstring path = toWinComPath(config.portName);
     m_handle = CreateFileW(
         path.c_str(),
         GENERIC_READ | GENERIC_WRITE,
-        0,                      // exclusive access
-        nullptr,                // default security
+        0,                      // exclusive
+        nullptr,
         OPEN_EXISTING,
-        FILE_FLAG_OVERLAPPED,   // overlapped I/O
+        FILE_FLAG_OVERLAPPED,   // we use overlapped I/O
         nullptr
     );
-    
     if (m_handle == INVALID_HANDLE_VALUE) {
-        dbglog("SerialPort::open() - Failed to open %s, error %d\n", 
+        dbglog("SerialPort::open() - Failed to open %s, error %lu\n",
                config.portName.c_str(), GetLastError());
         return false;
     }
-    
-    // Configure the port
-    DCB dcb = {0};
+
+    // Basic driver buffers
+    SetupComm(m_handle, 1<<16, 1<<16);
+
+    // Configure DCB
+    DCB dcb{};
     dcb.DCBlength = sizeof(dcb);
-    
     if (!GetCommState(m_handle, &dcb)) {
-        dbglog("SerialPort::open() - GetCommState failed, error %d\n", GetLastError());
+        dbglog("SerialPort::open() - GetCommState failed, err %lu\n", GetLastError());
         close();
         return false;
     }
-    
-    // Set Wang 2200 compatible settings
+
     dcb.BaudRate = config.baudRate;
-    dcb.ByteSize = config.dataBits;
-    dcb.StopBits = config.stopBits;
-    dcb.Parity = config.parity;
-    
-    // Flow control settings for Wang hardware
+    dcb.ByteSize = static_cast<BYTE>(config.dataBits);
+    dcb.Parity   = static_cast<BYTE>(config.parity);
+    dcb.fParity  = (config.parity != NOPARITY);
+    dcb.StopBits = static_cast<BYTE>(config.stopBits);
+
+    // Default: assert RTS/DTR, no software flow
+    dcb.fOutxCtsFlow   = FALSE;
+    dcb.fRtsControl    = RTS_CONTROL_ENABLE;   // keep RTS asserted
+    dcb.fDtrControl    = DTR_CONTROL_ENABLE;   // keep DTR asserted
+    dcb.fOutX = dcb.fInX = FALSE;
+    dcb.fDsrSensitivity = FALSE;
+
+    // Optional hardware CTS flow control
     if (config.flowControl) {
-        dcb.fOutxCtsFlow = TRUE;    // CTS output flow control
-        dcb.fRtsControl = RTS_CONTROL_HANDSHAKE;  // RTS handshaking
-        dcb.fDtrControl = DTR_CONTROL_ENABLE;     // DTR on
-        dcb.fDsrSensitivity = TRUE; // DSR sensitivity
-    } else {
-        dcb.fOutxCtsFlow = FALSE;
-        dcb.fRtsControl = RTS_CONTROL_ENABLE;
-        dcb.fDtrControl = DTR_CONTROL_ENABLE;
-        dcb.fDsrSensitivity = FALSE;
+        dcb.fOutxCtsFlow = TRUE;
+        dcb.fRtsControl  = RTS_CONTROL_HANDSHAKE;
     }
-    
-    // Disable software flow control (Wang uses hardware)
-    dcb.fOutX = FALSE;
-    dcb.fInX = FALSE;
-    
+
     if (!SetCommState(m_handle, &dcb)) {
-        dbglog("SerialPort::open() - SetCommState failed, error %d\n", GetLastError());
+        dbglog("SerialPort::open() - SetCommState failed, err %lu\n", GetLastError());
         close();
         return false;
     }
-    
-    // Set timeouts for Wang 2200 compatibility
-    COMMTIMEOUTS timeouts = {0};
-    timeouts.ReadIntervalTimeout = MAXDWORD;
-    timeouts.ReadTotalTimeoutMultiplier = 0;
-    timeouts.ReadTotalTimeoutConstant = 0;
-    timeouts.WriteTotalTimeoutMultiplier = 0;
-    timeouts.WriteTotalTimeoutConstant = 1000; // 1 second write timeout
-    
-    if (!SetCommTimeouts(m_handle, &timeouts)) {
-        dbglog("SerialPort::open() - SetCommTimeouts failed, error %d\n", GetLastError());
+
+    // Also assert RTS/DTR explicitly (some drivers care)
+    EscapeCommFunction(m_handle, SETRTS);
+    EscapeCommFunction(m_handle, SETDTR);
+
+    // Reasonable timeouts (overlapped ignores most of these, but harmless)
+    COMMTIMEOUTS to{};
+    to.ReadIntervalTimeout         = MAXDWORD; // non-aggregating read
+    to.ReadTotalTimeoutMultiplier  = 0;
+    to.ReadTotalTimeoutConstant    = 0;
+    to.WriteTotalTimeoutMultiplier = 0;
+    to.WriteTotalTimeoutConstant   = 0;
+    if (!SetCommTimeouts(m_handle, &to)) {
+        dbglog("SerialPort::open() - SetCommTimeouts failed, err %lu\n", GetLastError());
         close();
         return false;
     }
-    
-    // Purge any existing data
+
     PurgeComm(m_handle, PURGE_RXCLEAR | PURGE_TXCLEAR);
-    
-    // Start receiving thread
+
+    // Start RX thread
     startReceiving();
-    
-    dbglog("SerialPort::open() - Opened %s at %d baud, %d%c%d, flow control %s\n",
+
+    dbglog("SerialPort::open() - Opened %s at %d baud, %d%c%d, flow %s\n",
            config.portName.c_str(), config.baudRate, config.dataBits,
-           (config.parity == NOPARITY) ? 'N' : (config.parity == ODDPARITY) ? 'O' : 'E',
-           (config.stopBits == ONESTOPBIT) ? 1 : 2,
-           config.flowControl ? "ON" : "OFF");
-    
+           (config.parity==ODDPARITY ? 'O' : (config.parity==EVENPARITY ? 'E' : 'N')),
+           (config.stopBits==ONESTOPBIT ? 1 : 2),
+           config.flowControl ? "RTS/CTS" : "none");
     return true;
 }
 
 void SerialPort::close()
 {
-    if (!isOpen()) {
-        return;
-    }
-    
+    if (!isOpen()) return;
+
+    // Stop RX thread first to avoid race with CancelIo
     stopReceiving();
-    
-    // Cancel any pending I/O
+
+    // Cancel any outstanding I/O on this handle
     CancelIo(m_handle);
-    
+
     CloseHandle(m_handle);
     m_handle = INVALID_HANDLE_VALUE;
-    
-    // Clear transmit queue
+
+    // Clear TX state/queue
     {
-        std::lock_guard<std::mutex> lock(m_txMutex);
-        while (!m_txQueue.empty()) {
-            m_txQueue.pop();
-        }
-        m_txBusy = false;
+        std::lock_guard<std::recursive_mutex> lock(m_txMutex);
+        std::queue<uint8> empty;
+        std::swap(m_txQueue, empty);
+        m_txBusy  = false;
         m_txTimer = nullptr;
     }
-    
+
     dbglog("SerialPort::close() - Closed %s\n", m_config.portName.c_str());
 }
 
 void SerialPort::attachTerminal(std::shared_ptr<Terminal> terminal)
 {
-    m_terminal = terminal;
+    m_terminal = std::move(terminal);
 }
 
 void SerialPort::detachTerminal()
 {
-    m_terminal = nullptr;
+    m_terminal.reset();
 }
 
 void SerialPort::sendByte(uint8 byte)
 {
     if (!isOpen()) {
+        dbglog("SerialPort::sendByte() - port closed, drop 0x%02X\n", byte);
         return;
     }
-    
-    std::lock_guard<std::mutex> lock(m_txMutex);
+
+    std::lock_guard<std::recursive_mutex> lock(m_txMutex);
+
+    // simple backpressure cap
+    constexpr size_t MAX_TX_QUEUE = 512;
+    if (m_txQueue.size() >= MAX_TX_QUEUE) {
+        dbglog("SerialPort::sendByte() - TX queue full (%u), drop 0x%02X\n",
+               (unsigned)m_txQueue.size(), byte);
+        return;
+    }
+
     m_txQueue.push(byte);
-    
-    // Start transmission if not already busy
-    if (!m_txBusy && !m_txQueue.empty()) {
-        uint8 nextByte = m_txQueue.front();
+
+    if (!m_txBusy) {
+        // kick off first byte
+        uint8 b = m_txQueue.front();
         m_txQueue.pop();
-        transmitByte(nextByte);
+        transmitByte(b);
     }
 }
 
 void SerialPort::sendData(const uint8 *data, size_t length)
 {
-    for (size_t i = 0; i < length; i++) {
-        sendByte(data[i]);
-    }
+    for (size_t i=0; i<length; ++i) sendByte(data[i]);
 }
 
 void SerialPort::startReceiving()
@@ -217,180 +213,159 @@ void SerialPort::stopReceiving()
 {
     if (m_receiveThread.joinable()) {
         m_stopReceiving = true;
-        SetEvent(m_readEvent); // Wake up the thread
+        SetEvent(m_readEvent); // wake wait
         m_receiveThread.join();
     }
 }
 
 void SerialPort::receiveThreadProc()
 {
-    uint8 buffer[256];
-    DWORD bytesRead;
-    
+    uint8  buffer[512];
+    DWORD  bytesRead = 0;
+
     while (!m_stopReceiving && isOpen()) {
-        // Reset the event
+        // reset event and issue overlapped read
         ResetEvent(m_readEvent);
-        
-        // Start an overlapped read
-        BOOL result = ReadFile(m_handle, buffer, sizeof(buffer), &bytesRead, &m_readOverlapped);
-        
-        if (result) {
-            // Read completed immediately
-            for (DWORD i = 0; i < bytesRead; i++) {
-                processReceivedByte(buffer[i]);
-            }
-        } else {
-            DWORD error = GetLastError();
-            if (error == ERROR_IO_PENDING) {
-                // Wait for the read to complete or timeout
-                DWORD waitResult = WaitForSingleObject(m_readEvent, 100);
-                if (waitResult == WAIT_OBJECT_0) {
-                    if (GetOverlappedResult(m_handle, &m_readOverlapped, &bytesRead, FALSE)) {
-                        for (DWORD i = 0; i < bytesRead; i++) {
-                            processReceivedByte(buffer[i]);
-                        }
-                    }
-                }
-            } else {
-                dbglog("SerialPort::receiveThreadProc() - ReadFile failed, error %d\n", error);
-                break;
-            }
+        BOOL ok = ReadFile(m_handle, buffer, sizeof(buffer), &bytesRead, &m_readOverlapped);
+        if (ok) {
+            // immediate completion
+            for (DWORD i=0; i<bytesRead; ++i) processReceivedByte(buffer[i]);
+            continue;
         }
+
+        DWORD err = GetLastError();
+        if (err == ERROR_IO_PENDING) {
+            DWORD wait = WaitForSingleObject(m_readEvent, 100); // poll ~10Hz
+            if (wait == WAIT_OBJECT_0) {
+                if (GetOverlappedResult(m_handle, &m_readOverlapped, &bytesRead, FALSE)) {
+                    for (DWORD i=0; i<bytesRead; ++i) processReceivedByte(buffer[i]);
+                }
+            }
+            continue;
+        }
+
+        dbglog("SerialPort::receiveThreadProc - ReadFile failed, err %lu\n", err);
+        break; // bail on hard error
     }
 }
 
 void SerialPort::processReceivedByte(uint8 byte)
 {
     if (m_terminal) {
-        // Feed the byte directly to the terminal's character processor
-        // This replaces what IoCardTermMux::mxdToTermCallback() did
+        // inject byte into Terminal pipeline
         m_terminal->processChar(byte);
     }
 }
 
 void SerialPort::transmitByte(uint8 byte)
 {
-    if (!isOpen()) {
-        return;
+    if (!isOpen()) return;
+
+    // single in-flight write only; prepare OVERLAPPED
+    ResetEvent(m_writeEvent);
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_txMutex);
+        m_txBusy = true;
     }
-    
-    m_txBusy = true;
-    
-    // Write the byte with overlapped I/O
-    DWORD bytesWritten;
-    BOOL result = WriteFile(m_handle, &byte, 1, &bytesWritten, &m_writeOverlapped);
-    
-    if (!result) {
-        DWORD error = GetLastError();
-        if (error == ERROR_IO_PENDING) {
-            // Wait for write to complete
-            GetOverlappedResult(m_handle, &m_writeOverlapped, &bytesWritten, TRUE);
-        } else {
-            dbglog("SerialPort::transmitByte() - WriteFile failed, error %d\n", error);
+
+    DWORD written = 0;
+    BOOL ok = WriteFile(m_handle, &byte, 1, &written, &m_writeOverlapped);
+    if (!ok) {
+        DWORD err = GetLastError();
+        if (err != ERROR_IO_PENDING) {
+            dbglog("SerialPort::transmitByte - WriteFile failed, err %lu\n", err);
+            std::lock_guard<std::recursive_mutex> lock(m_txMutex);
             m_txBusy = false;
             return;
         }
+        // pending: completion will be detected/polled in onTransmitComplete()
     }
-    
-    // Schedule completion callback to model UART timing
+
+    // Model UART character time; when the timer fires we check completion
     int64 delay = calculateTransmitDelay();
-    m_txTimer = m_scheduler->createTimer(delay, 
-                    std::bind(&SerialPort::onTransmitComplete, this));
+    if (delay < 1000000) delay = 1000000; // floor ~1ms so we don't spin
+    m_txTimer = m_scheduler->createTimer(
+        delay,
+        std::bind(&SerialPort::onTransmitComplete, this)
+    );
 }
 
 void SerialPort::onTransmitComplete()
 {
-    m_txTimer = nullptr;
-    
-    std::lock_guard<std::mutex> lock(m_txMutex);
-    m_txBusy = false;
-    
-    // Send next byte if queue has more data
-    if (!m_txQueue.empty()) {
-        uint8 nextByte = m_txQueue.front();
-        m_txQueue.pop();
-        transmitByte(nextByte);
+    // If the port is closed (or closing), just drain & bail.
+    if (!isOpen()) {
+        std::lock_guard<std::recursive_mutex> lock(m_txMutex);
+        m_txBusy = false;
+        std::queue<uint8> empty;
+        std::swap(m_txQueue, empty);
+        m_txTimer = nullptr;
+        return;
+    }
+
+    DWORD bytes = 0;
+    BOOL done = GetOverlappedResult(m_handle, &m_writeOverlapped, &bytes, FALSE);
+    if (!done) {
+        DWORD err = GetLastError();
+        if (err == ERROR_IO_INCOMPLETE) {
+            // Still pending (e.g., CTS low). Poll again shortly.
+            m_txTimer = m_scheduler->createTimer(
+                1000000, // 1 ms
+                std::bind(&SerialPort::onTransmitComplete, this)
+            );
+            return;
+        }
+        // If we got here, the write was aborted or the handle changed.
+        // Treat as hard-stop for this byte and continue with the queue.
+        // (Common errors here: ERROR_OPERATION_ABORTED, ERROR_INVALID_HANDLE)
+        dbglog("SerialPort::onTransmitComplete - write aborted/err %lu\n", err);
+    }
+
+    uint8 next = 0;
+    bool  have = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_txMutex);
+        m_txBusy = false;
+        if (!m_txQueue.empty()) {
+            next = m_txQueue.front();
+            m_txQueue.pop();
+            have = true;
+            m_txBusy = true; // claim for next write
+        }
+    }
+    if (have) {
+        transmitByte(next);
     }
 }
 
 int64 SerialPort::calculateTransmitDelay() const
 {
-    // Calculate delay based on Wang 2200 serial timing
-    // Formula: (start bit + data bits + parity bit + stop bits) / baud rate
-    double bitsPerChar = 1.0; // start bit
-    bitsPerChar += m_config.dataBits; // data bits
-    if (m_config.parity != NOPARITY) {
-        bitsPerChar += 1.0; // parity bit
-    }
-    bitsPerChar += (m_config.stopBits == ONESTOPBIT) ? 1.0 : 2.0; // stop bits
-    
-    // Convert to nanoseconds
-    double charTimeUs = (bitsPerChar * 1.0E6) / m_config.baudRate;
-    return static_cast<int64>(charTimeUs * 1000.0); // convert to nanoseconds
+    // (start + data + parity + stop) / baud → seconds
+    double bitsPerChar = 1.0;                  // start
+    bitsPerChar += m_config.dataBits;          // data
+    if (m_config.parity != NOPARITY) bitsPerChar += 1.0;
+    bitsPerChar += (m_config.stopBits == ONESTOPBIT) ? 1.0 : 2.0;
+
+    // return nanoseconds (scheduler units)
+    double charTimeUs = (bitsPerChar * 1.0e6) / m_config.baudRate;
+    return static_cast<int64>(charTimeUs * 1000.0);
 }
 
 #else
 // Non-Windows stub implementation
-SerialPort::SerialPort(std::shared_ptr<Scheduler> scheduler) :
-    m_scheduler(scheduler)
-{
-}
-
-SerialPort::~SerialPort()
-{
-}
-
-bool SerialPort::open(const SerialConfig &config)
-{
-    return false;
-}
-
-void SerialPort::close()
-{
-}
-
-void SerialPort::attachTerminal(std::shared_ptr<Terminal> terminal)
-{
-}
-
-void SerialPort::detachTerminal()
-{
-}
-
-void SerialPort::sendByte(uint8 byte)
-{
-}
-
-void SerialPort::sendData(const uint8 *data, size_t length)
-{
-}
-
-void SerialPort::startReceiving()
-{
-}
-
-void SerialPort::stopReceiving()
-{
-}
-
-void SerialPort::receiveThreadProc()
-{
-}
-
-void SerialPort::processReceivedByte(uint8 byte)
-{
-}
-
-void SerialPort::transmitByte(uint8 byte)
-{
-}
-
-void SerialPort::onTransmitComplete()
-{
-}
-
-int64 SerialPort::calculateTransmitDelay() const
-{
-    return 0;
-}
+SerialPort::SerialPort(std::shared_ptr<Scheduler> scheduler) : m_scheduler(std::move(scheduler)) {}
+SerialPort::~SerialPort() {}
+bool  SerialPort::open(const SerialConfig &) { return false; }
+void  SerialPort::close() {}
+void  SerialPort::attachTerminal(std::shared_ptr<Terminal>) {}
+void  SerialPort::detachTerminal() {}
+void  SerialPort::sendByte(uint8) {}
+void  SerialPort::sendData(const uint8*, size_t) {}
+void  SerialPort::startReceiving() {}
+void  SerialPort::stopReceiving() {}
+void  SerialPort::receiveThreadProc() {}
+void  SerialPort::processReceivedByte(uint8) {}
+void  SerialPort::transmitByte(uint8) {}
+void  SerialPort::onTransmitComplete() {}
+int64 SerialPort::calculateTransmitDelay() const { return 0; }
 #endif // _WIN32
