@@ -1142,24 +1142,34 @@ system2200::unregisterKb(int io_addr, int term_num)
 void
 system2200::dispatchKeystroke(int io_addr, int term_num, int keyvalue)
 {
-    for (auto &kb : keyboard_routes) {
-        if (io_addr == kb.io_addr && term_num == kb.term_num) {
-            if (kb.script_handle) {
-                // a script is running; ignore everything but HALT
-                // (on pc, ctrl-C or pause/break key)
-                if (keyvalue == IoCardKeyboard::KEYCODE_HALT) {
-                    kb.script_handle = nullptr;
+    auto try_deliver = [&](int addr)->bool {
+        for (auto &kb : keyboard_routes) {
+            if (addr == kb.io_addr && term_num == kb.term_num) {
+                if (kb.script_handle) {
+                    if (keyvalue == IoCardKeyboard::KEYCODE_HALT) {
+                        kb.script_handle = nullptr;
+                    }
+                    return true; // swallow while script active
                 }
-                return;
+                auto cb = kb.callback_fn;
+                cb(keyvalue);
+                return true;
             }
-            auto cb = kb.callback_fn;
-            cb(keyvalue);
-            return;
         }
-    }
-    UI_warn("Attempt to route key to unknown kb handler at io_addr=0x%02x, term_num=%d",
+        return false;
+    };
+
+    // 1) try exact
+    if (try_deliver(io_addr)) return;
+
+    // 2) compatibility: some older configs used high addresses (e.g., 0x2001)
+    const int low8 = (io_addr & 0xFF);
+    if ((io_addr & ~0xFF) && try_deliver(low8)) return;
+
+    UI_warn("Attempt to route key to unknown kb handler at io_addr=0x%04x, term_num=%d",
             io_addr, term_num);
 }
+
 
 
 // request the contents of a file to be fed in as a keyboard stream
