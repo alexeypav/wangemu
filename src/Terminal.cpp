@@ -32,6 +32,10 @@
 #include "Ui.h"
 #include "host.h"              // for dbglog()
 #include "system2200.h"
+#include <chrono>
+#include <algorithm>
+#undef min
+#undef max
 
 bool do_debug = false;
 
@@ -326,6 +330,7 @@ Terminal::checkKbBuffer()
         // serial channel is in use
         return;
     }
+    
 
     if (m_kb_buff.empty() && (m_crt_flow_state != flow_state_t::STOP_PEND)
                           && (m_crt_flow_state != flow_state_t::GO_PEND)) {
@@ -357,17 +362,6 @@ Terminal::checkKbBuffer()
     // does at the end of line.  so instead we run at 1/4 rate for normal
     // chars, and 1/100 rate for <CR> and hope that is enough.
     int64 delay = serial_char_delay;
-    if (m_script_active) {
-        if (m_serialPort) {
-            // COM-terminal: be more conservative than MUX
-            // ~10× for normal chars, ~250× for CR
-            delay *= (byte == 0x0D) ? 250 : 10;
-        } else if (m_vp_cpu) {
-            delay *= (byte == 0x0D) ? 100 : 4;
-        } else {
-            delay *= (byte == 0x0D) ? 150 : 7;
-        }
-    }
     // another complication: if two terminals are doing script processing
     // at the same time, it slows down the MXD response time, and we again
     // get overruns.
@@ -375,6 +369,7 @@ Terminal::checkKbBuffer()
     if (active_scripts > 1) {
         delay *= active_scripts;
     }
+    
 
     // unfortunately, the "CLEAR" command (which starts all the scripts
     // distributed with wangemu) takes a long time to execute, and the
@@ -390,16 +385,6 @@ Terminal::checkKbBuffer()
     // characters if it was in danger of overrunning.  that would be a big
     // and ugly hammer.
 
-    // Extra help for COM scripts: slow the first 1–2 bytes after a CR.
-    // This reduces dropped digits/letters at the start of a line.
-    if (m_serialPort && m_script_active) {
-        if (!m_kb_recent.empty() && (m_kb_recent.back() == 0x0D || m_kb_recent.back() == 0x0A)) {
-            delay += TIMER_MS(80);     // first char after CR/LF
-        } else if (m_kb_recent.size() >= 2 &&
-                (m_kb_recent[m_kb_recent.size()-2] == 0x0D || m_kb_recent[m_kb_recent.size()-2] == 0x0A)) {
-            delay += TIMER_MS(40);     // second char after CR/LF
-        }
-    }
 
     m_kb_recent.push_back(byte);
     const int fifo_size = m_kb_recent.size();
@@ -407,50 +392,13 @@ Terminal::checkKbBuffer()
         m_kb_recent.pop_front();
         if (m_script_active) {
             std::vector<uint8> k{m_kb_recent.begin(), m_kb_recent.end()}; // convert deque to vector
-            if (   (k[0] == 'C')
-                && (k[1] == 'L')
-                && (k[2] == 'E')
-                && (k[3] == 'A')
-                && (k[4] == 'R')
-                && (k[5] == 0x0D)) {
-                delay = TIMER_MS(1000);
-            }
         }
     }
 
-    // For COM scripts, send CRLF at end of line to keep the 2200 happy.
-    if (m_serialPort && m_script_active && byte == 0x0D) {
-        // 1) send CR after the usual delay
-        m_tx_tmr = m_scheduler->createTimer(
-            delay, std::bind(&Terminal::termToMxdCallback, this, byte)
-        );
-
-        // 2) then send LF a little later, and only *then* poll the next script byte
-        //    (this avoids starting the new line before the host finishes EOL work)
-        const int64 lf_delay = delay + TIMER_MS(30);   // tweakable: 20–60ms is fine
-        m_scheduler->createTimer(
-            lf_delay,
-            [this]() {
-                // Send LF
-                this->termToMxdCallback(0x0A);
-
-                // Clear the “just had CR” condition in the recent history
-                if (!this->m_kb_recent.empty() && this->m_kb_recent.back() == 0x0D)
-                    this->m_kb_recent.back() = 0x0A;
-
-                // Now that CRLF has gone out, advance the script
-                if (this->m_kb_buff.size() < 5) {
-                    const int kb_addr = ((this->m_io_addr & 0xFF) + 0x01) & 0xFF;
-                    this->m_script_active = system2200::pollScriptInput(kb_addr, this->m_term_num);
-                }
-            }
-        );
-    } else {
-        // normal path
-        m_tx_tmr = m_scheduler->createTimer(
-            delay, std::bind(&Terminal::termToMxdCallback, this, byte)
-        );
-    }
+    // normal path
+    m_tx_tmr = m_scheduler->createTimer(
+        delay, std::bind(&Terminal::termToMxdCallback, this, byte)
+    );
 
 }
 
@@ -459,6 +407,7 @@ Terminal::checkKbBuffer()
 void
 Terminal::termToMxdCallback(int key)
 {
+    dbglog("TIMER CALLBACK EXECUTED: byte=0x%02X, clearing m_tx_tmr\n", key);
     m_tx_tmr = nullptr;
     
     if (m_muxd) {
@@ -472,6 +421,15 @@ Terminal::termToMxdCallback(int key)
     } else if (m_serialPort) {
         // COM port mode - send to real Wang 2200 via serial port
         m_serialPort->sendByte(static_cast<uint8>(key));
+
+        // Add actual sleep delay for script characters since scheduler timers don't work properly
+        if (m_script_active) {
+            if (key == 0x0D) {
+                std::this_thread::sleep_for(std::chrono::microseconds(400));  // Extra delay for CR (2x faster: 0.8ms → 0.4ms)
+            } else {
+                std::this_thread::sleep_for(std::chrono::microseconds(100));  // Base delay for normal chars (2x faster: 0.2ms → 0.1ms)
+            }
+        }
 
        // Keep the script flowing: poll for the next byte using the *registered* kb addr
        if (m_kb_buff.size() < 5) {
