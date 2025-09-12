@@ -103,9 +103,10 @@ Terminal::Terminal(std::shared_ptr<Scheduler> scheduler,
 
     const bool smart_term = (screen_type == UI_SCREEN_2236DE);
     if (smart_term) {
-        // Register keyboard callback for COM port mode
-        // Use a unique address for COM terminals to avoid conflicts
-        int kb_addr = 0x01;
+    // Register keyboard callback for COM port mode
+    // Use the low-8 “keyboard” offset (m_io_addr low byte + 1),
+    // so it matches how MUX terminals are addressed.
+        const int kb_addr = ( (m_io_addr & 0xFF) + 0x01 ) & 0xFF;
         system2200::registerKb(
             kb_addr, m_term_num,
             std::bind(&Terminal::receiveKeystroke, this, std::placeholders::_1)
@@ -357,17 +358,14 @@ Terminal::checkKbBuffer()
     // chars, and 1/100 rate for <CR> and hope that is enough.
     int64 delay = serial_char_delay;
     if (m_script_active) {
-        if (m_vp_cpu) {
-            delay *= ((byte == 0x0D) ? 100 : 4);
+        if (m_serialPort) {
+            // COM-terminal: be more conservative than MUX
+            // ~10× for normal chars, ~250× for CR
+            delay *= (byte == 0x0D) ? 250 : 10;
+        } else if (m_vp_cpu) {
+            delay *= (byte == 0x0D) ? 100 : 4;
         } else {
-            // this is good enough for entering programs into empty memory,
-            // but if the input is merging with an existing program, causing
-            // a lot of end-of-line processing, things break down.  maybe a
-            // better fix is to not invoke the script polling here but instead
-            // from inside the IoCardTermMux code -- it knows when the CPU
-            // is waiting for a byte.  Here we could make the serial port
-            // delay tiny and just feed the bytes on demand.  TODO: think
-            delay *= ((byte == 0x0D) ? 150 : 7);
+            delay *= (byte == 0x0D) ? 150 : 7;
         }
     }
     // another complication: if two terminals are doing script processing
@@ -391,6 +389,18 @@ Terminal::checkKbBuffer()
     // the RX fifo is and somehow throttle this code from sending any
     // characters if it was in danger of overrunning.  that would be a big
     // and ugly hammer.
+
+    // Extra help for COM scripts: slow the first 1–2 bytes after a CR.
+    // This reduces dropped digits/letters at the start of a line.
+    if (m_serialPort && m_script_active) {
+        if (!m_kb_recent.empty() && (m_kb_recent.back() == 0x0D || m_kb_recent.back() == 0x0A)) {
+            delay += TIMER_MS(80);     // first char after CR/LF
+        } else if (m_kb_recent.size() >= 2 &&
+                (m_kb_recent[m_kb_recent.size()-2] == 0x0D || m_kb_recent[m_kb_recent.size()-2] == 0x0A)) {
+            delay += TIMER_MS(40);     // second char after CR/LF
+        }
+    }
+
     m_kb_recent.push_back(byte);
     const int fifo_size = m_kb_recent.size();
     if (fifo_size > 7) {
@@ -408,10 +418,40 @@ Terminal::checkKbBuffer()
         }
     }
 
-    m_tx_tmr = m_scheduler->createTimer(
-                   delay,
-                   std::bind(&Terminal::termToMxdCallback, this, byte)
-               );
+    // For COM scripts, send CRLF at end of line to keep the 2200 happy.
+    if (m_serialPort && m_script_active && byte == 0x0D) {
+        // 1) send CR after the usual delay
+        m_tx_tmr = m_scheduler->createTimer(
+            delay, std::bind(&Terminal::termToMxdCallback, this, byte)
+        );
+
+        // 2) then send LF a little later, and only *then* poll the next script byte
+        //    (this avoids starting the new line before the host finishes EOL work)
+        const int64 lf_delay = delay + TIMER_MS(30);   // tweakable: 20–60ms is fine
+        m_scheduler->createTimer(
+            lf_delay,
+            [this]() {
+                // Send LF
+                this->termToMxdCallback(0x0A);
+
+                // Clear the “just had CR” condition in the recent history
+                if (!this->m_kb_recent.empty() && this->m_kb_recent.back() == 0x0D)
+                    this->m_kb_recent.back() = 0x0A;
+
+                // Now that CRLF has gone out, advance the script
+                if (this->m_kb_buff.size() < 5) {
+                    const int kb_addr = ((this->m_io_addr & 0xFF) + 0x01) & 0xFF;
+                    this->m_script_active = system2200::pollScriptInput(kb_addr, this->m_term_num);
+                }
+            }
+        );
+    } else {
+        // normal path
+        m_tx_tmr = m_scheduler->createTimer(
+            delay, std::bind(&Terminal::termToMxdCallback, this, byte)
+        );
+    }
+
 }
 
 
@@ -431,9 +471,13 @@ Terminal::termToMxdCallback(int key)
         }
     } else if (m_serialPort) {
         // COM port mode - send to real Wang 2200 via serial port
-        dbglog("Terminal::termToMxdCallback() - Sending byte 0x%02X ('%c') via COM port\n",
-               key, (key >= 0x20 && key <= 0x7E) ? key : '.');
         m_serialPort->sendByte(static_cast<uint8>(key));
+
+       // Keep the script flowing: poll for the next byte using the *registered* kb addr
+       if (m_kb_buff.size() < 5) {
+           const int kb_addr = ( (m_io_addr & 0xFF) + 0x01 ) & 0xFF;
+           m_script_active = system2200::pollScriptInput(kb_addr, m_term_num);
+       }
     }
 
     // see if any other chars are pending
