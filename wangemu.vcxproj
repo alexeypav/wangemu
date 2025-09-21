@@ -172,6 +172,7 @@
     <ClCompile Include="src\ucode_2200B.cpp" />
     <ClCompile Include="src\ucode_2200T.cpp" />
     <ClCompile Include="src\ucode_boot_vp.cpp" />
+    <ClCompile Include="src\UiControlFrame.cpp" />
     <ClCompile Include="src\UiCrt.cpp" />
     <ClCompile Include="src\UiCrtConfigDlg.cpp" />
     <ClCompile Include="src\UiCrtErrorDlg.cpp" />
@@ -214,6 +215,7 @@
     <ClInclude Include="src\tokens.h" />
     <ClInclude Include="src\ucode_2200.h" />
     <ClInclude Include="src\Ui.h" />
+    <ClInclude Include="src\UiControlFrame.h" />
     <ClInclude Include="src\UiCrt.h" />
     <ClInclude Include="src\UiCrtConfigDlg.h" />
     <ClInclude Include="src\UiCrtErrorDlg.h" />

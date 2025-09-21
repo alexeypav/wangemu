@@ -34,6 +34,7 @@ private:
 
     void buildMenus();
     void setMenuChecks(const wxMenu *menu);
+    void rebuildDiskMenu(wxMenu *disk_menu);
 
     // handlers (mirror the ones in UiCrtFrame.cpp but without CRT specifics)
     void OnQuit(wxCommandEvent &);

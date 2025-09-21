@@ -10,6 +10,9 @@
 #include "system2200.h"
 #include "host.h"
 #include "compile_options.h"
+#include "Ui.h"
+
+#include <cassert>
 
 enum { TB_NONE = 0 }; // no toolbar/status bar needed
 
@@ -38,16 +41,7 @@ void ControlFrame::buildMenus()
     menu_cpu->AppendCheckItem(CPU_ActualSpeed,      "&Actual Speed",      "Run emulation at machine speed");
     menu_cpu->AppendCheckItem(CPU_UnregulatedSpeed, "&Unregulated Speed", "Run emulation at maximum speed");
 
-    wxMenu *menu_disk = new wxMenu;   // entries filled dynamically like CrtFrame
-    // populate standard items
-    menu_disk->Append(Disk_New,     "New...",     "Create a new virtual disk image");
-    menu_disk->Append(Disk_Inspect, "Inspect...", "Open the Disk Factory");
-    menu_disk->Append(Disk_Format,  "Format...",  "Low-level format");
-    menu_disk->AppendSeparator();
-    // slot drive items handled in OnDisk (same pattern as CrtFrame)
-    menu_disk->AppendSeparator();
-    menu_disk->AppendCheckItem(Disk_Realtime,        "Realtime Speed",      "Regulate disk controller speed");
-    menu_disk->AppendCheckItem(Disk_UnregulatedSpeed,"Unregulated Speed",   "Run disk controller flat out");
+    wxMenu *menu_disk = new wxMenu;   // entries filled dynamically in setMenuChecks
 
     wxMenu *menu_config = new wxMenu;
     menu_config->Append(Configure_Dialog, "&System...", "Configure CPU, RAM, and I/O cards");
@@ -91,11 +85,68 @@ void ControlFrame::setMenuChecks(const wxMenu *menu)
         m_menubar->Check(CPU_ActualSpeed, regulated);
         m_menubar->Check(CPU_UnregulatedSpeed, !regulated);
     } else if (menu == m_menubar->GetMenu(2)) { // Disk menu
-        const bool regulated = system2200::isDiskRealtime();
-        m_menubar->Check(Disk_Realtime, regulated);
-        m_menubar->Check(Disk_UnregulatedSpeed, !regulated);
-        // If you want per-slot enabled/disabled, call into UiDiskFactory to refresh.
+        // Dynamically generate the disk menu each time
+        int disk_menu_pos = m_menubar->FindMenu("Disk");
+        if (disk_menu_pos >= 0 && (menu == m_menubar->GetMenu(disk_menu_pos))) {
+            wxMenu *disk_menu = m_menubar->GetMenu(disk_menu_pos);
+            const int items = disk_menu->GetMenuItemCount();
+
+            // Remove all existing menu items
+            for (int i=items-1; i>=0; i--) {
+                wxMenuItem *item = disk_menu->FindItemByPosition(i);
+                disk_menu->Delete(item);
+            }
+
+            // Regenerate the disk menu with current drive states
+            rebuildDiskMenu(disk_menu);
+        }
     }
+}
+
+void ControlFrame::rebuildDiskMenu(wxMenu *disk_menu)
+{
+    // See if there are any disk controllers and build dynamic menu items
+    for (int controller=0; ; controller++) {
+        int slot = 0, io_addr = 0;
+        if (!system2200::findDiskController(controller, &slot)) {
+            break;
+        }
+        const bool ok = system2200::getSlotInfo(slot, nullptr, &io_addr);
+        assert(ok);
+        for (int d=0; d < 4; d++) {
+            const int stat = IoCardDisk::wvdDriveStatus(slot, d);
+            if ((stat & IoCardDisk::WVD_STAT_DRIVE_EXISTENT) == 0) {
+                break;
+            }
+            const char drive_ch = ((d & 1) == 0) ? 'F' : 'R';
+            const int  addr_off = ((d & 2) == 0) ? 0x00 : 0x40;
+            const int  eff_addr = io_addr + addr_off;
+            if ((stat & IoCardDisk::WVD_STAT_DRIVE_OCCUPIED) != 0) {
+                wxString str1, str2;
+                str1.Printf("Drive %c/%03X: Remove", drive_ch, eff_addr);
+                str2.Printf("Remove the disk from drive %d, unit /%03X", d, eff_addr);
+                disk_menu->Append(Disk_Remove+8*slot+2*d, str1, str2, wxITEM_CHECK);
+            } else {
+                wxString str1, str2;
+                str1.Printf("Drive %c/%03X: Insert", drive_ch, eff_addr);
+                str2.Printf("Insert a disk into drive %d, unit /%03X", d, eff_addr);
+                disk_menu->Append(Disk_Insert+8*slot+2*d, str1, str2, wxITEM_CHECK);
+            }
+        }
+        disk_menu->AppendSeparator();
+    }
+    
+    // Add the static menu items
+    disk_menu->Append(Disk_New,     "&New Disk...",     "Create virtual disk");
+    disk_menu->Append(Disk_Inspect, "&Inspect Disk...", "Inspect/modify virtual disk");
+    disk_menu->Append(Disk_Format,  "&Format Disk...",  "Format existing virtual disk");
+
+    const bool disk_realtime = system2200::isDiskRealtime();
+    disk_menu->AppendSeparator();
+    disk_menu->Append(Disk_Realtime,         "Realtime Disk Speed",  "Emulate actual disk timing",             wxITEM_CHECK);
+    disk_menu->Append(Disk_UnregulatedSpeed, "Unregulated Speed",    "Make disk accesses as fast as possible", wxITEM_CHECK);
+    disk_menu->Check(Disk_Realtime,          disk_realtime);
+    disk_menu->Check(Disk_UnregulatedSpeed, !disk_realtime);
 }
 
 void ControlFrame::OnQuit(wxCommandEvent&)            
@@ -165,9 +216,43 @@ void ControlFrame::OnDiskFactory(wxCommandEvent &e)
 
 void ControlFrame::OnDisk(wxCommandEvent &e)          
 { 
-    // Handle disk insert/remove operations like CrtFrame does
-    // This is a placeholder - the actual implementation would need
-    // the same logic as CrtFrame::OnDisk for slot/drive management
+    // Each controller manages two drives, each has three possible actions
+    const int menu_id = e.GetId();
+    const int slot  =  (menu_id - Disk_Insert) / 8;
+    const int drive = ((menu_id - Disk_Insert) % 8) / 2;
+    const int type  =  (menu_id - Disk_Insert) % 2;
+
+    bool ok = true;
+    switch (type) {
+
+        case 0: // insert disk
+        {   std::string full_path;
+            if (host::fileReq(host::FILEREQ_DISK, "Disk to load", true, &full_path) ==
+                              host::FILEREQ_OK) {
+                int drive2, io_addr2;
+                const bool b = system2200::findDisk(full_path, nullptr, &drive2, &io_addr2);
+                const int eff_addr = io_addr2 + ((drive2 < 2) ? 0x00 : 0x40);
+                if (b) {
+                    UI_warn("Disk already in drive %c /%03x", "FRFR"[drive2], eff_addr);
+                    return;
+                }
+                ok = IoCardDisk::wvdInsertDisk(slot, drive, full_path);
+            }
+        }   break;
+
+        case 1: // remove disk
+            ok = IoCardDisk::wvdRemoveDisk(slot, drive);
+            break;
+
+        default:
+            ok = false;
+            assert(false);
+            break;
+    }
+
+    if (!ok) {
+        UI_error("Error: operation failed");
+    }
 }
 
 void ControlFrame::OnConfigureDialog(wxCommandEvent &) 

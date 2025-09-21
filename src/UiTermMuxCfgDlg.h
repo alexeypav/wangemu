@@ -20,9 +20,20 @@ public:
 private:
     // ---- event handlers ----
     void OnNumTerminals(wxCommandEvent &event);
+    void OnComPortChange(wxCommandEvent &event);
+    void OnBaudRateChange(wxCommandEvent &event);
+    void OnFlowControlChange(wxCommandEvent &event);
     void OnButton(wxCommandEvent &event);
 
     wxRadioBox *m_rb_num_terminals = nullptr;   // number of attached terminals
+    
+    // COM port configuration controls
+    wxStaticBox  *m_sb_terminals = nullptr;     // static box for terminal config
+    wxCheckBox   *m_cb_com_port[4] = {nullptr}; // enable COM port checkboxes
+    wxTextCtrl   *m_tc_com_port[4] = {nullptr}; // COM port name text controls
+    wxChoice     *m_ch_baud_rate[4] = {nullptr}; // baud rate choices
+    wxCheckBox   *m_cb_flow_control[4] = {nullptr}; // flow control checkboxes
+    
     wxButton   *m_btn_revert       = nullptr;
     wxButton   *m_btn_ok           = nullptr;
     wxButton   *m_btn_cancel       = nullptr;

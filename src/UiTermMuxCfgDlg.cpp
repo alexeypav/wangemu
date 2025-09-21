@@ -7,6 +7,8 @@
 #include "host.h"
 #include "system2200.h"
 
+#include <cassert>
+
 // ----------------------------------------------------------------------------
 // a simple static dialog to provide help on the TermMuxCfgDlg options
 // ----------------------------------------------------------------------------
@@ -64,9 +66,33 @@ TermMuxCfgHelpDlg::TermMuxCfgHelpDlg(wxWindow *parent)
     txt->AppendText(
         "\n"
         "Each 2236MXD controller supports from one to four terminals. "
-        "Right now there is nothing else to configure, so there isn't "
-        "much to explain."
-        "\n\n"
+        "Each terminal can be configured to either display as a GUI window "
+        "or connect to a host COM port for use with external terminal programs."
+        "\n\n");
+
+    txt->SetDefaultStyle(section_attr);
+    txt->AppendText("COM Port Configuration\n");
+
+    txt->SetDefaultStyle(body_attr);
+    txt->AppendText(
+        "\n"
+        "For each terminal, you can:\n"
+        "• Enable \"Use COM Port\" to redirect the terminal to a host serial port\n"
+        "• Set the COM port name (COM1, COM2, etc.)\n"
+        "• Configure the baud rate (9600, 19200, 38400, 57600, or 115200)\n"
+        "• Enable flow control if your terminal program requires it\n"
+        "\n"
+        "When a terminal uses a COM port, no GUI window will be created for it. "
+        "Instead, you can connect external terminal software to the specified "
+        "COM port to interact with the emulated Wang system."
+        "\n\n");
+
+    txt->SetDefaultStyle(section_attr);
+    txt->AppendText("Compatibility\n");
+
+    txt->SetDefaultStyle(body_attr);
+    txt->AppendText(
+        "\n"
         "The MXD can be used by Wang VP and Wang MVP OS's, though "
         "multiple terminals are supported by only the MVP OS's."
         "\n\n"
@@ -95,6 +121,22 @@ TermMuxCfgHelpDlg::TermMuxCfgHelpDlg(wxWindow *parent)
 enum
 {
     ID_RB_NUM_TERMINALS = 100,          // radio box
+    ID_CB_COM_PORT_1,                   // COM port checkboxes
+    ID_CB_COM_PORT_2,
+    ID_CB_COM_PORT_3,
+    ID_CB_COM_PORT_4,
+    ID_TC_COM_PORT_1,                   // COM port text controls
+    ID_TC_COM_PORT_2,
+    ID_TC_COM_PORT_3,
+    ID_TC_COM_PORT_4,
+    ID_CH_BAUD_RATE_1,                  // baud rate choices
+    ID_CH_BAUD_RATE_2,
+    ID_CH_BAUD_RATE_3,
+    ID_CH_BAUD_RATE_4,
+    ID_CB_FLOW_CONTROL_1,               // flow control checkboxes
+    ID_CB_FLOW_CONTROL_2,
+    ID_CB_FLOW_CONTROL_3,
+    ID_CB_FLOW_CONTROL_4,
     ID_BTN_HELP   = 300,
     ID_BTN_REVERT
 };
@@ -124,6 +166,48 @@ TermMuxCfgDlg::TermMuxCfgDlg(wxFrame *parent, CardCfgState &cfg) :
                                         4, &choicesNumTerminals[0],
                                         1, wxRA_SPECIFY_ROWS);
 
+    // Create COM port configuration section
+    m_sb_terminals = new wxStaticBox(this, wxID_ANY, "Terminal Configuration");
+    wxStaticBoxSizer *terminal_sizer = new wxStaticBoxSizer(m_sb_terminals, wxVERTICAL);
+    
+    // Header row
+    wxBoxSizer *header_sizer = new wxBoxSizer(wxHORIZONTAL);
+    header_sizer->Add(new wxStaticText(this, wxID_ANY, "Terminal"), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+    header_sizer->Add(new wxStaticText(this, wxID_ANY, "Use COM Port"), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+    header_sizer->Add(new wxStaticText(this, wxID_ANY, "Port Name"), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+    header_sizer->Add(new wxStaticText(this, wxID_ANY, "Baud Rate"), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+    header_sizer->Add(new wxStaticText(this, wxID_ANY, "Flow Control"), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+    terminal_sizer->Add(header_sizer, 0, wxEXPAND | wxALL, 2);
+    
+    // Create controls for each terminal
+    const wxString baudChoices[] = { "9600", "19200", "38400", "57600", "115200" };
+    for (int i = 0; i < 4; i++) {
+        wxBoxSizer *term_sizer = new wxBoxSizer(wxHORIZONTAL);
+        
+        // Terminal number label
+        wxString termLabel = wxString::Format("Terminal %d", i + 1);
+        term_sizer->Add(new wxStaticText(this, wxID_ANY, termLabel), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+        
+        // Use COM port checkbox
+        m_cb_com_port[i] = new wxCheckBox(this, ID_CB_COM_PORT_1 + i, "");
+        term_sizer->Add(m_cb_com_port[i], 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+        
+        // COM port name text control
+        m_tc_com_port[i] = new wxTextCtrl(this, ID_TC_COM_PORT_1 + i, "COM1", wxDefaultPosition, wxSize(80, -1));
+        term_sizer->Add(m_tc_com_port[i], 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+        
+        // Baud rate choice
+        m_ch_baud_rate[i] = new wxChoice(this, ID_CH_BAUD_RATE_1 + i, wxDefaultPosition, wxSize(80, -1), 5, baudChoices);
+        m_ch_baud_rate[i]->SetSelection(1); // default to 19200
+        term_sizer->Add(m_ch_baud_rate[i], 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+        
+        // Flow control checkbox
+        m_cb_flow_control[i] = new wxCheckBox(this, ID_CB_FLOW_CONTROL_1 + i, "");
+        term_sizer->Add(m_cb_flow_control[i], 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+        
+        terminal_sizer->Add(term_sizer, 0, wxEXPAND | wxALL, 2);
+    }
+
     // put three buttons side by side
     m_btn_help   = new wxButton(this, ID_BTN_HELP,   "Help");
     m_btn_revert = new wxButton(this, ID_BTN_REVERT, "Revert");
@@ -144,6 +228,7 @@ TermMuxCfgDlg::TermMuxCfgDlg(wxFrame *parent, CardCfgState &cfg) :
     // all of it is stacked vertically
     wxBoxSizer *top_sizer = new wxBoxSizer(wxVERTICAL);
     top_sizer->Add(m_rb_num_terminals, 0, wxALIGN_LEFT  | wxALL, 5);
+    top_sizer->Add(terminal_sizer,     0, wxEXPAND | wxALL, 5);
     top_sizer->Add(button_sizer,       0, wxALIGN_RIGHT | wxALL, 5);
 
     updateDlg();                        // select current options
@@ -156,6 +241,15 @@ TermMuxCfgDlg::TermMuxCfgDlg(wxFrame *parent, CardCfgState &cfg) :
 
     // event routing table
     Bind(wxEVT_RADIOBOX, &TermMuxCfgDlg::OnNumTerminals, this, ID_RB_NUM_TERMINALS);
+    
+    // Bind COM port configuration events
+    for (int i = 0; i < 4; i++) {
+        Bind(wxEVT_CHECKBOX, &TermMuxCfgDlg::OnComPortChange, this, ID_CB_COM_PORT_1 + i);
+        Bind(wxEVT_TEXT, &TermMuxCfgDlg::OnComPortChange, this, ID_TC_COM_PORT_1 + i);
+        Bind(wxEVT_CHOICE, &TermMuxCfgDlg::OnBaudRateChange, this, ID_CH_BAUD_RATE_1 + i);
+        Bind(wxEVT_CHECKBOX, &TermMuxCfgDlg::OnFlowControlChange, this, ID_CB_FLOW_CONTROL_1 + i);
+    }
+    
     Bind(wxEVT_BUTTON,   &TermMuxCfgDlg::OnButton,       this, -1);
 }
 
@@ -165,6 +259,42 @@ void
 TermMuxCfgDlg::updateDlg()
 {
     m_rb_num_terminals->SetSelection(m_cfg.getNumTerminals()-1);
+    
+    // Update COM port configuration for each terminal
+    for (int i = 0; i < 4; i++) {
+        bool useCom = m_cfg.isTerminalComPort(i);
+        std::string comPort = m_cfg.getTerminalComPort(i);
+        int baudRate = m_cfg.getTerminalBaudRate(i);
+        bool flowControl = m_cfg.getTerminalFlowControl(i);
+        
+        // Set checkbox state
+        m_cb_com_port[i]->SetValue(useCom);
+        
+        // Set COM port name (default to COM1 if empty)
+        if (comPort.empty()) {
+            comPort = "COM1";
+        }
+        m_tc_com_port[i]->SetValue(comPort);
+        
+        // Set baud rate selection
+        wxString baudStr = wxString::Format("%d", baudRate);
+        int baudIndex = m_ch_baud_rate[i]->FindString(baudStr);
+        if (baudIndex != wxNOT_FOUND) {
+            m_ch_baud_rate[i]->SetSelection(baudIndex);
+        } else {
+            m_ch_baud_rate[i]->SetSelection(1); // default to 19200
+        }
+        
+        // Set flow control
+        m_cb_flow_control[i]->SetValue(flowControl);
+        
+        // Enable/disable controls based on number of terminals and COM port checkbox
+        bool terminalEnabled = (i < m_cfg.getNumTerminals());
+        m_cb_com_port[i]->Enable(terminalEnabled);
+        m_tc_com_port[i]->Enable(terminalEnabled && useCom);
+        m_ch_baud_rate[i]->Enable(terminalEnabled && useCom);
+        m_cb_flow_control[i]->Enable(terminalEnabled && useCom);
+    }
 }
 
 
@@ -178,6 +308,74 @@ TermMuxCfgDlg::OnNumTerminals(wxCommandEvent& WXUNUSED(event))
         case 3: m_cfg.setNumTerminals(4); break;
         default: assert(false); break;
     }
+    
+    // Update the control enable states based on new number of terminals
+    updateDlg();
+    
+    m_btn_revert->Enable(m_cfg != m_old_cfg);
+}
+
+
+// handle COM port checkbox and text changes
+void
+TermMuxCfgDlg::OnComPortChange(wxCommandEvent &event)
+{
+    int termIndex = -1;
+    int controlId = event.GetId();
+    
+    // Determine which terminal this event is for
+    if (controlId >= ID_CB_COM_PORT_1 && controlId <= ID_CB_COM_PORT_4) {
+        termIndex = controlId - ID_CB_COM_PORT_1;
+        
+        // Update the COM port setting
+        bool useCom = m_cb_com_port[termIndex]->GetValue();
+        std::string comPort = useCom ? m_tc_com_port[termIndex]->GetValue().ToStdString() : "";
+        m_cfg.setTerminalComPort(termIndex, comPort);
+        
+        // Enable/disable related controls
+        m_tc_com_port[termIndex]->Enable(useCom);
+        m_ch_baud_rate[termIndex]->Enable(useCom);
+        m_cb_flow_control[termIndex]->Enable(useCom);
+        
+    } else if (controlId >= ID_TC_COM_PORT_1 && controlId <= ID_TC_COM_PORT_4) {
+        termIndex = controlId - ID_TC_COM_PORT_1;
+        
+        // Update the COM port name if checkbox is checked
+        if (m_cb_com_port[termIndex]->GetValue()) {
+            std::string comPort = m_tc_com_port[termIndex]->GetValue().ToStdString();
+            m_cfg.setTerminalComPort(termIndex, comPort);
+        }
+    }
+    
+    m_btn_revert->Enable(m_cfg != m_old_cfg);
+}
+
+// handle baud rate changes
+void
+TermMuxCfgDlg::OnBaudRateChange(wxCommandEvent &event)
+{
+    int termIndex = event.GetId() - ID_CH_BAUD_RATE_1;
+    if (termIndex >= 0 && termIndex < 4) {
+        wxString baudStr = m_ch_baud_rate[termIndex]->GetStringSelection();
+        long baudRate;
+        if (baudStr.ToLong(&baudRate)) {
+            m_cfg.setTerminalBaudRate(termIndex, (int)baudRate);
+        }
+    }
+    
+    m_btn_revert->Enable(m_cfg != m_old_cfg);
+}
+
+// handle flow control changes
+void
+TermMuxCfgDlg::OnFlowControlChange(wxCommandEvent &event)
+{
+    int termIndex = event.GetId() - ID_CB_FLOW_CONTROL_1;
+    if (termIndex >= 0 && termIndex < 4) {
+        bool flowControl = m_cb_flow_control[termIndex]->GetValue();
+        m_cfg.setTerminalFlowControl(termIndex, flowControl);
+    }
+    
     m_btn_revert->Enable(m_cfg != m_old_cfg);
 }
 
