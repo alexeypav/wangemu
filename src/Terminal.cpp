@@ -362,6 +362,16 @@ Terminal::checkKbBuffer()
     // does at the end of line.  so instead we run at 1/4 rate for normal
     // chars, and 1/100 rate for <CR> and hope that is enough.
     int64 delay = serial_char_delay;
+    if (m_script_active) {
+        if (m_vp_cpu) {
+            delay *= ((byte == 0x0D) ? 100 : 4);
+        } else {
+            // this is good enough for entering programs into empty memory,
+            // but if the input is merging with an existing program, causing
+            // a lot of end-of-line processing, things break down.
+            delay *= ((byte == 0x0D) ? 150 : 7);
+        }
+    }
     // another complication: if two terminals are doing script processing
     // at the same time, it slows down the MXD response time, and we again
     // get overruns.
