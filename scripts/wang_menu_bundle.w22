@@ -1,0 +1,40 @@
+10 REM START — enter @MENU at @ROOT
+20 $PSTAT="@ROOT"
+30 LOADRUN "@MENU"
+
+RESAVE DC F "@START"
+
+CLEAR
+
+9000 REM @ROOT — node descriptor then items
+9030 DATA "@ROOT","MAIN MENU",0,0,"SPACE=Next  ENTER=Select"
+9060 DATA "@HELLO","Run Hello demo","P"
+9070 DATA "@TOOLS","Open the Tools submenu","M"
+9090 DATA "EXIT","Exit to BASIC","E"
+9100 DATA "no more","end of node"," "
+
+RESAVE DC F "@ROOT"
+
+CLEAR
+
+9000 REM @TOOLS — submenu node
+9030 DATA "@TOOLS","TOOLS",0,0,"TOOLS: SPACE/ENTER"
+9060 DATA "@HELLO","Run Hello again","P"
+9070 DATA "EXIT","Back to MAIN MENU","E"
+9100 DATA "no more","end of node"," "
+
+RESAVE DC F "@TOOLS"
+
+CLEAR
+
+10 REM @HELLO — sample item target
+20 PRINT HEX(03)
+30 PRINT "Hello from the @MENU demo!"
+40 PRINT
+50 PRINT "Press any key to return..."
+60 KEYIN K$
+70 LOADRUN "@MENU"
+
+RESAVE DC F "@HELLO"
+
+CLEAR
