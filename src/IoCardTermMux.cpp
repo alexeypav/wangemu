@@ -136,7 +136,8 @@ IoCardTermMux::IoCardTermMux(std::shared_ptr<Scheduler> scheduler,
             SerialConfig serial_cfg;
             serial_cfg.portName = m_cfg.getTerminalComPort(n);
             serial_cfg.baudRate = m_cfg.getTerminalBaudRate(n);
-            serial_cfg.hwFlowControl = m_cfg.getTerminalFlowControl(n);
+            // Hardware flow control (RTS/CTS) is disabled for Wang terminals since they don't support it
+            serial_cfg.hwFlowControl = false;
             serial_cfg.swFlowControl = m_cfg.getTerminalSwFlowControl(n);
             serial_cfg.dataBits = 8;
 #ifdef _WIN32

@@ -94,13 +94,13 @@ bool SerialPort::open(const SerialConfig &config)
     dcb.fOutX = dcb.fInX = FALSE;
     dcb.fDsrSensitivity = FALSE;
 
-    // Optional hardware CTS flow control
+    // Optional hardware CTS flow control (not used for Wang terminals)
     if (config.hwFlowControl) {
         dcb.fOutxCtsFlow = TRUE;
         dcb.fRtsControl  = RTS_CONTROL_HANDSHAKE;
     }
 
-    // Optional software XON/XOFF flow control
+    // Optional software XON/XOFF flow control (recommended for Wang terminals)
     if (config.swFlowControl) {
         dcb.fOutX = TRUE;   // Pause transmission when XOFF received
         dcb.fInX  = TRUE;   // Send XON/XOFF when RX buffer thresholds reached

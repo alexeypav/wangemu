@@ -230,7 +230,8 @@ createTerminalMode()
     config.dataBits = 8;
     config.parity = ODDPARITY;       // Wang 2200 uses odd parity
     config.stopBits = ONESTOPBIT;
-    config.hwFlowControl = current_cfg->getComFlowControl();
+    // Hardware flow control (RTS/CTS) is disabled for Wang terminals since they don't support it
+    config.hwFlowControl = false;
     config.swFlowControl = current_cfg->getComSwFlowControl();
     
     char debug_msg[256];

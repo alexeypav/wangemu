@@ -29,8 +29,8 @@ struct SerialConfig {
     BYTE dataBits;              // 7 or 8
     BYTE stopBits;              // ONESTOPBIT, TWOSTOPBITS  
     BYTE parity;                // NOPARITY, ODDPARITY, EVENPARITY
-    bool hwFlowControl;         // Hardware flow control (RTS/CTS)
-    bool swFlowControl;         // Software flow control (XON/XOFF)
+    bool hwFlowControl;         // Hardware flow control (RTS/CTS) - not used for Wang terminals
+    bool swFlowControl;         // Software flow control (XON/XOFF) - recommended for Wang terminals
     
     SerialConfig() :
         portName("COM5"),

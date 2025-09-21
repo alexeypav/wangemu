@@ -121,8 +121,8 @@ private:
     // -------------- 2236WD terminal COM port settings --------------
     std::string m_com_port_name = "COM1";  // COM port for 2236WD terminal mode  
     int         m_com_baud_rate = 19200;   // Baud rate for COM port
-    bool        m_com_flow_control = true; // Hardware flow control enabled
-    bool        m_com_sw_flow_control = false; // Software flow control (XON/XOFF)
+    bool        m_com_flow_control = false; // Hardware flow control (RTS/CTS) - not used for Wang terminals  
+    bool        m_com_sw_flow_control = true;  // Software flow control (XON/XOFF) - recommended for Wang terminals
 };
 
 #endif // _INCLUDE_SYS_CONFIG_STATE_H_

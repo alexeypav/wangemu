@@ -22,7 +22,6 @@ private:
     void OnNumTerminals(wxCommandEvent &event);
     void OnComPortChange(wxCommandEvent &event);
     void OnBaudRateChange(wxCommandEvent &event);
-    void OnFlowControlChange(wxCommandEvent &event);
     void OnSwFlowControlChange(wxCommandEvent &event);
     void OnButton(wxCommandEvent &event);
 
@@ -33,8 +32,7 @@ private:
     wxCheckBox   *m_cb_com_port[4] = {nullptr}; // enable COM port checkboxes
     wxTextCtrl   *m_tc_com_port[4] = {nullptr}; // COM port name text controls
     wxChoice     *m_ch_baud_rate[4] = {nullptr}; // baud rate choices
-    wxCheckBox   *m_cb_flow_control[4] = {nullptr}; // hardware flow control checkboxes
-    wxCheckBox   *m_cb_sw_flow_control[4] = {nullptr}; // software flow control checkboxes
+    wxCheckBox   *m_cb_sw_flow_control[4] = {nullptr}; // software flow control checkboxes (XON/XOFF)
     
     wxButton   *m_btn_revert       = nullptr;
     wxButton   *m_btn_ok           = nullptr;
