@@ -419,6 +419,23 @@ SystemConfigDlg::OnCpuChoice(wxCommandEvent& WXUNUSED(event))
     m_ch_baud_rate->Show(is_terminal_mode);
     m_cb_flow_control->Show(is_terminal_mode);
     
+    if (is_terminal_mode) {
+        // Populate COM port settings when switching to terminal mode
+        m_tc_com_port->SetValue(m_cfg.getComPortName());
+        
+        // Set baud rate
+        const int baud_rate = m_cfg.getComBaudRate();
+        wxString baud_str = wxString::Format("%d", baud_rate);
+        int baud_selection = m_ch_baud_rate->FindString(baud_str);
+        if (baud_selection != wxNOT_FOUND) {
+            m_ch_baud_rate->SetSelection(baud_selection);
+        } else {
+            m_ch_baud_rate->SetSelection(1); // Default to 19200
+        }
+        
+        m_cb_flow_control->SetValue(m_cfg.getComFlowControl());
+    }
+    
     // Refresh layout to accommodate visibility changes
     Layout();
 
