@@ -445,16 +445,37 @@ system2200::setConfig(const SysCfgState &new_cfg)
         const bool rebuild_required = current_cfg->needsReboot(new_cfg);
         if (!rebuild_required) {
             *current_cfg = new_cfg;  // make new config permanent
-            // notify all configured cards about possible new configuration
-            for (int slot=0; slot < NUM_IOSLOTS; slot++) {
-                if (current_cfg->isSlotOccupied(slot)) {
-                    const IoCard::card_t ct = current_cfg->getSlotCardType(slot);
-                    if (CardInfo::isCardConfigurable(ct)) {
-                        auto cfg = current_cfg->getCardConfig(slot);
-                        auto card = getInstFromSlot(slot);
-                        card->setConfiguration(*cfg);
+            
+            // In 2236WD terminal mode, there are no cards to configure, so skip card updates
+            const int cpu_type = current_cfg->getCpuType();
+            if (cpu_type != Cpu2200::CPUTYPE_2236WD) {
+                // notify all configured cards about possible new configuration
+                for (int slot=0; slot < NUM_IOSLOTS; slot++) {
+                    if (current_cfg->isSlotOccupied(slot)) {
+                        const IoCard::card_t ct = current_cfg->getSlotCardType(slot);
+                        if (CardInfo::isCardConfigurable(ct)) {
+                            auto cfg = current_cfg->getCardConfig(slot);
+                            auto card = getInstFromSlot(slot);
+                            card->setConfiguration(*cfg);
+                        }
                     }
                 }
+            } else {
+                // For 2236WD terminal mode, we need to recreate the terminal with new COM port settings
+                // First clean up existing terminal
+                if (terminal) {
+                    if (terminal_serial_port) {
+                        terminal_serial_port->detachTerminal();
+                    }
+                    terminal = nullptr;
+                }
+                if (terminal_serial_port) {
+                    terminal_serial_port->close();
+                    terminal_serial_port = nullptr;
+                }
+                
+                // Recreate terminal with new COM port settings
+                createTerminalMode();
             }
             return;
         }
