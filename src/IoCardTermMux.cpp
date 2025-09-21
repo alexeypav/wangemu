@@ -148,9 +148,9 @@ IoCardTermMux::IoCardTermMux(std::shared_ptr<Scheduler> scheduler,
                 m_terms[n].serial_port = serial_port;
                 m_terms[n].terminal.reset();  // No GUI terminal
                 
-                // Set up RX callback so serial → MXD works (will add this method)
+                // Set up RX callback so serial → MXD works (using new FIFO-based method)
                 serial_port->setReceiveCallback(
-                    [this, n](uint8 b){ this->serialToMxdRx(n, b); });
+                    [this, n](uint8 b){ this->serialRxByte(n, b); });
                 
                 dbglog("IoCardTermMux: Terminal %d connected to COM port %s at %d baud\n",
                        n, m_cfg.getTerminalComPort(n).c_str(), m_cfg.getTerminalBaudRate(n));
@@ -415,10 +415,10 @@ IoCardTermMux::updateRbi() noexcept
 void
 IoCardTermMux::updateInterrupt() noexcept
 {
-    m_interrupt_pending = m_terms[0].rx_ready
-                       || m_terms[1].rx_ready
-                       || m_terms[2].rx_ready
-                       || m_terms[3].rx_ready;
+    m_interrupt_pending = !m_terms[0].rx_fifo.empty()
+                       || !m_terms[1].rx_fifo.empty()
+                       || !m_terms[2].rx_fifo.empty()
+                       || !m_terms[3].rx_fifo.empty();
 }
 
 
@@ -435,18 +435,8 @@ IoCardTermMux::receiveKeystroke(int term_num, int keycode)
         return;
     }
 
-    // Handle GUI terminal keystrokes (existing behavior)
-    if (term.rx_ready) {
-#ifdef _DEBUG
-        UI_warn("terminal received char too fast");
-#endif
-        // TODO: set uart overrun status bit?
-        // then fall through because the old char is overwritten
-    }
-    term.rx_ready = true;
-    term.rx_byte  = keycode;
-
-    updateInterrupt();
+    // Use the new FIFO-based approach for GUI terminals too (consistency)
+    queueRxByte(term_num, static_cast<uint8_t>(keycode));
 }
 
 
@@ -495,22 +485,42 @@ IoCardTermMux::mxdToTermCallback(int term_num, int byte)
 }
 
 
-// Feed serial RX bytes back into the MXD UART
+// Feed serial RX bytes back into the MXD UART (legacy method - kept for compatibility)
 void
 IoCardTermMux::serialToMxdRx(int term_num, uint8 byte)
 {
-    assert((0 <= term_num) && (term_num < MAX_TERMINALS));
-    m_term_t &term = m_terms[term_num];
+    // Use the new FIFO-based approach instead of the old single-byte latch
+    queueRxByte(term_num, byte);
+}
 
-    // If an RX byte is already pending and the MXD hasn't read it yet,
-    // we could set an overrun bit here (not currently modeled)
-    if (!term.rx_ready) {
-        term.rx_byte  = byte;
-        term.rx_ready = true;
-        updateInterrupt();
+
+// New FIFO-based RX methods for reliable multi-byte key sequences
+void
+IoCardTermMux::queueRxByte(int term_num, uint8_t byte)
+{
+    assert((0 <= term_num) && (term_num < MAX_TERMINALS));
+    auto &t = m_terms[term_num];
+    
+    if (t.rx_fifo.size() >= RX_FIFO_MAX) {
+        // Drop oldest to avoid hard-stall; count a stat
+        t.rx_fifo.pop_front();
+        ++t.rx_overrun_drops;
     }
-    // If rx_ready is true, the previous byte hasn't been read yet.
-    // In a real UART this would be an overrun condition.
+    t.rx_fifo.push_back(byte);
+
+    // This should assert the card's RxRDY/interrupt state like the prior rx_ready did
+    updateInterrupt();
+}
+
+
+void
+IoCardTermMux::serialRxByte(int term_num, uint8_t byte)
+{
+    // Raw Wang terminal bytes from 2336DW arrive here. Do NOT VT/ANSI-translate.
+    // Normalize CR/LF if your system requires (usually leave as-is; CR=0x0D).
+    // if (byte == 0x0A) return; // example: drop bare LF if you previously did that
+
+    queueRxByte(term_num, byte);
 }
 
 // ============================================================================
@@ -601,25 +611,30 @@ IoCardTermMux::i8080_in_func(int addr, void *user_data) noexcept
         break;
 
     case IN_UART_RXRDY:
-        rv = (tthis->m_terms[3].rx_ready ? 0x08 : 0x00)
-           | (tthis->m_terms[2].rx_ready ? 0x04 : 0x00)
-           | (tthis->m_terms[1].rx_ready ? 0x02 : 0x00)
-           | (tthis->m_terms[0].rx_ready ? 0x01 : 0x00);
+        rv = (!tthis->m_terms[3].rx_fifo.empty() ? 0x08 : 0x00)
+           | (!tthis->m_terms[2].rx_fifo.empty() ? 0x04 : 0x00)
+           | (!tthis->m_terms[1].rx_fifo.empty() ? 0x02 : 0x00)
+           | (!tthis->m_terms[0].rx_fifo.empty() ? 0x01 : 0x00);
         break;
 
     case IN_UART_DATA:
-        rv = static_cast<uint8>(term.rx_byte);
-        // reading the data has the side effect of clearing the rxrdy status
-        term.rx_ready = false;
+        if (!term.rx_fifo.empty()) {
+            rv = term.rx_fifo.front();
+            term.rx_fifo.pop_front();
+        } else {
+            rv = 0x00;  // Return 0 if FIFO is empty
+        }
+        // After consuming, update status/IRQ
         tthis->updateInterrupt();
         break;
 
     case IN_UART_STATUS:
         {
         const bool tx_empty = term.tx_ready && !term.tx_tmr;
+        const bool rx_ready = !term.rx_fifo.empty();
         const bool dsr = (term_num < tthis->m_num_terms);
         rv = (term.tx_ready ? 0x01 : 0x00)  // [0] = tx fifo empty
-           | (term.rx_ready ? 0x02 : 0x00)  // [1] = rx fifo has a byte
+           | (rx_ready      ? 0x02 : 0x00)  // [1] = rx fifo has a byte
            | (tx_empty      ? 0x04 : 0x00)  // [2] = tx serializer and fifo empty
            | (false         ? 0x08 : 0x00)  // [3] = parity error
            | (false         ? 0x10 : 0x00)  // [4] = overrun error
