@@ -87,7 +87,7 @@ bool SerialPort::open(const SerialConfig &config)
     dcb.fParity  = (config.parity != NOPARITY);
     dcb.StopBits = static_cast<BYTE>(config.stopBits);
 
-    // Default: assert RTS/DTR, no software flow
+    // Default: assert RTS/DTR, no flow control
     dcb.fOutxCtsFlow   = FALSE;
     dcb.fRtsControl    = RTS_CONTROL_ENABLE;   // keep RTS asserted
     dcb.fDtrControl    = DTR_CONTROL_ENABLE;   // keep DTR asserted
@@ -95,9 +95,19 @@ bool SerialPort::open(const SerialConfig &config)
     dcb.fDsrSensitivity = FALSE;
 
     // Optional hardware CTS flow control
-    if (config.flowControl) {
+    if (config.hwFlowControl) {
         dcb.fOutxCtsFlow = TRUE;
         dcb.fRtsControl  = RTS_CONTROL_HANDSHAKE;
+    }
+
+    // Optional software XON/XOFF flow control
+    if (config.swFlowControl) {
+        dcb.fOutX = TRUE;   // Pause transmission when XOFF received
+        dcb.fInX  = TRUE;   // Send XON/XOFF when RX buffer thresholds reached
+        dcb.XonChar  = 0x11; // XON character (DC1)
+        dcb.XoffChar = 0x13; // XOFF character (DC3)
+        dcb.XonLim   = 512;  // Send XON when RX buffer has this much free space
+        dcb.XoffLim  = 128;  // Send XOFF when RX buffer has this much data
     }
 
     if (!SetCommState(m_handle, &dcb)) {
@@ -132,7 +142,9 @@ bool SerialPort::open(const SerialConfig &config)
            config.portName.c_str(), config.baudRate, config.dataBits,
            (config.parity==ODDPARITY ? 'O' : (config.parity==EVENPARITY ? 'E' : 'N')),
            (config.stopBits==ONESTOPBIT ? 1 : 2),
-           config.flowControl ? "RTS/CTS" : "none");
+           config.hwFlowControl && config.swFlowControl ? "RTS/CTS+XON/XOFF" :
+           config.hwFlowControl ? "RTS/CTS" :
+           config.swFlowControl ? "XON/XOFF" : "none");
     return true;
 }
 

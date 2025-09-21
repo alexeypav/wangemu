@@ -73,6 +73,7 @@ SysCfgState::operator=(const SysCfgState &rhs)
     setComPortName(rhs.getComPortName());
     setComBaudRate(rhs.getComBaudRate());
     setComFlowControl(rhs.getComFlowControl());
+    setComSwFlowControl(rhs.getComSwFlowControl());
 
     return *this;
 }
@@ -163,7 +164,8 @@ SysCfgState::setDefaults()
     // Set COM port defaults for 2236WD terminal mode
     setComPortName("COM6");
     setComBaudRate(19200);
-    setComFlowControl(true);
+    setComFlowControl(false);    // Default to software flow control for Wang terminals
+    setComSwFlowControl(true);
 
     // wipe out all cards
     for (int slot=0; slot < NUM_IOSLOTS; slot++) {
@@ -303,9 +305,14 @@ SysCfgState::loadIni()
         sprintf(debug_msg, "DEBUG: COM terminal config - baud_rate: %d\n", ival);
         OutputDebugStringA(debug_msg);
 
-        host::configReadBool(subgroup, "flow_control", &bval, true);
+        host::configReadBool(subgroup, "flow_control", &bval, false);
         setComFlowControl(bval);
         sprintf(debug_msg, "DEBUG: COM terminal config - flow_control: %s\n", bval ? "true" : "false");
+        OutputDebugStringA(debug_msg);
+        
+        host::configReadBool(subgroup, "sw_flow_control", &bval, true);
+        setComSwFlowControl(bval);
+        sprintf(debug_msg, "DEBUG: COM terminal config - sw_flow_control: %s\n", bval ? "true" : "false");
         OutputDebugStringA(debug_msg);
     }
 
@@ -370,6 +377,7 @@ SysCfgState::saveIni() const
         host::configWriteStr(subgroup, "port_name",     getComPortName());
         host::configWriteInt(subgroup, "baud_rate",     getComBaudRate());
         host::configWriteBool(subgroup, "flow_control", getComFlowControl());
+        host::configWriteBool(subgroup, "sw_flow_control", getComSwFlowControl());
     }
 }
 
@@ -513,6 +521,18 @@ bool
 SysCfgState::getComFlowControl() const noexcept
 {
     return m_com_flow_control;
+}
+
+void
+SysCfgState::setComSwFlowControl(bool sw_flow_control) noexcept
+{
+    m_com_sw_flow_control = sw_flow_control;
+}
+
+bool
+SysCfgState::getComSwFlowControl() const noexcept
+{
+    return m_com_sw_flow_control;
 }
 
 

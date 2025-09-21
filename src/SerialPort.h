@@ -29,7 +29,8 @@ struct SerialConfig {
     BYTE dataBits;              // 7 or 8
     BYTE stopBits;              // ONESTOPBIT, TWOSTOPBITS  
     BYTE parity;                // NOPARITY, ODDPARITY, EVENPARITY
-    bool flowControl;           // Hardware flow control (RTS/CTS)
+    bool hwFlowControl;         // Hardware flow control (RTS/CTS)
+    bool swFlowControl;         // Software flow control (XON/XOFF)
     
     SerialConfig() :
         portName("COM5"),
@@ -37,7 +38,8 @@ struct SerialConfig {
         dataBits(8), 
         stopBits(ONESTOPBIT),
         parity(ODDPARITY),
-        flowControl(false)  // Disable hardware flow control by default
+        hwFlowControl(false),   // Disable hardware flow control by default
+        swFlowControl(false)    // Disable software flow control by default
     {}
 };
 

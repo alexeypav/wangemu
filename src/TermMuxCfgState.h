@@ -49,6 +49,9 @@ public:
     void setTerminalFlowControl(int term_num, bool flow_control) noexcept;
     bool getTerminalFlowControl(int term_num) const noexcept;
     
+    void setTerminalSwFlowControl(int term_num, bool sw_flow_control) noexcept;
+    bool getTerminalSwFlowControl(int term_num) const noexcept;
+    
     // check if a terminal should use COM port instead of GUI window
     bool isTerminalComPort(int term_num) const noexcept;
 
@@ -56,7 +59,8 @@ private:
     struct TerminalCfg {
         std::string com_port = "";      // empty = use GUI window, non-empty = COM port name
         int baud_rate = 19200;
-        bool flow_control = false;
+        bool flow_control = false;      // Hardware flow control (RTS/CTS)
+        bool sw_flow_control = false;   // Software flow control (XON/XOFF)
     };
     
     bool m_initialized = false;         // for debugging and sanity checking

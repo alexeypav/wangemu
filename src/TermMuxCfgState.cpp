@@ -231,6 +231,18 @@ bool TermMuxCfgState::getTerminalFlowControl(int term_num) const noexcept
     return m_terminals[term_num].flow_control;
 }
 
+void TermMuxCfgState::setTerminalSwFlowControl(int term_num, bool sw_flow_control) noexcept
+{
+    assert(term_num >= 0 && term_num < 4);
+    m_terminals[term_num].sw_flow_control = sw_flow_control;
+}
+
+bool TermMuxCfgState::getTerminalSwFlowControl(int term_num) const noexcept
+{
+    assert(term_num >= 0 && term_num < 4);
+    return m_terminals[term_num].sw_flow_control;
+}
+
 bool TermMuxCfgState::isTerminalComPort(int term_num) const noexcept
 {
     assert(term_num >= 0 && term_num < 4);

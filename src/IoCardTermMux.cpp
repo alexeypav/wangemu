@@ -136,7 +136,8 @@ IoCardTermMux::IoCardTermMux(std::shared_ptr<Scheduler> scheduler,
             SerialConfig serial_cfg;
             serial_cfg.portName = m_cfg.getTerminalComPort(n);
             serial_cfg.baudRate = m_cfg.getTerminalBaudRate(n);
-            serial_cfg.flowControl = m_cfg.getTerminalFlowControl(n);
+            serial_cfg.hwFlowControl = m_cfg.getTerminalFlowControl(n);
+            serial_cfg.swFlowControl = m_cfg.getTerminalSwFlowControl(n);
             serial_cfg.dataBits = 8;
 #ifdef _WIN32
             serial_cfg.parity = ODDPARITY;  // Wang terminals typically use odd parity

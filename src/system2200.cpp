@@ -230,7 +230,8 @@ createTerminalMode()
     config.dataBits = 8;
     config.parity = ODDPARITY;       // Wang 2200 uses odd parity
     config.stopBits = ONESTOPBIT;
-    config.flowControl = current_cfg->getComFlowControl();
+    config.hwFlowControl = current_cfg->getComFlowControl();
+    config.swFlowControl = current_cfg->getComSwFlowControl();
     
     char debug_msg[256];
     sprintf(debug_msg, "DEBUG: Terminal config - trying configured port: %s at %d baud\n", 

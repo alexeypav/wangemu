@@ -77,6 +77,8 @@ public:
     int getComBaudRate() const noexcept;
     void setComFlowControl(bool flow_control) noexcept;
     bool getComFlowControl() const noexcept;
+    void setComSwFlowControl(bool sw_flow_control) noexcept;
+    bool getComSwFlowControl() const noexcept;
 
     // retrieve the pointer to the per-card configuration state
     std::shared_ptr<CardCfgState> getCardConfig(int slot) const noexcept;
@@ -120,6 +122,7 @@ private:
     std::string m_com_port_name = "COM1";  // COM port for 2236WD terminal mode  
     int         m_com_baud_rate = 19200;   // Baud rate for COM port
     bool        m_com_flow_control = true; // Hardware flow control enabled
+    bool        m_com_sw_flow_control = false; // Software flow control (XON/XOFF)
 };
 
 #endif // _INCLUDE_SYS_CONFIG_STATE_H_

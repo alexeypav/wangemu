@@ -80,7 +80,8 @@ TermMuxCfgHelpDlg::TermMuxCfgHelpDlg(wxWindow *parent)
         "• Enable \"Use COM Port\" to redirect the terminal to a host serial port\n"
         "• Set the COM port name (COM1, COM2, etc.)\n"
         "• Configure the baud rate (9600, 19200, 38400, 57600, or 115200)\n"
-        "• Enable flow control if your terminal program requires it\n"
+        "• Enable HW Flow for RTS/CTS hardware flow control\n"
+        "• Enable SW Flow for XON/XOFF software flow control (recommended for Wang terminals)\n"
         "\n"
         "When a terminal uses a COM port, no GUI window will be created for it. "
         "Instead, you can connect external terminal software to the specified "
@@ -133,10 +134,14 @@ enum
     ID_CH_BAUD_RATE_2,
     ID_CH_BAUD_RATE_3,
     ID_CH_BAUD_RATE_4,
-    ID_CB_FLOW_CONTROL_1,               // flow control checkboxes
+    ID_CB_FLOW_CONTROL_1,               // hardware flow control checkboxes
     ID_CB_FLOW_CONTROL_2,
     ID_CB_FLOW_CONTROL_3,
     ID_CB_FLOW_CONTROL_4,
+    ID_CB_SW_FLOW_CONTROL_1,            // software flow control checkboxes
+    ID_CB_SW_FLOW_CONTROL_2,
+    ID_CB_SW_FLOW_CONTROL_3,
+    ID_CB_SW_FLOW_CONTROL_4,
     ID_BTN_HELP   = 300,
     ID_BTN_REVERT
 };
@@ -176,7 +181,8 @@ TermMuxCfgDlg::TermMuxCfgDlg(wxFrame *parent, CardCfgState &cfg) :
     header_sizer->Add(new wxStaticText(this, wxID_ANY, "Use COM Port"), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
     header_sizer->Add(new wxStaticText(this, wxID_ANY, "Port Name"), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
     header_sizer->Add(new wxStaticText(this, wxID_ANY, "Baud Rate"), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
-    header_sizer->Add(new wxStaticText(this, wxID_ANY, "Flow Control"), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+    header_sizer->Add(new wxStaticText(this, wxID_ANY, "HW Flow"), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+    header_sizer->Add(new wxStaticText(this, wxID_ANY, "SW Flow"), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
     terminal_sizer->Add(header_sizer, 0, wxEXPAND | wxALL, 2);
     
     // Create controls for each terminal
@@ -201,9 +207,13 @@ TermMuxCfgDlg::TermMuxCfgDlg(wxFrame *parent, CardCfgState &cfg) :
         m_ch_baud_rate[i]->SetSelection(1); // default to 19200
         term_sizer->Add(m_ch_baud_rate[i], 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
         
-        // Flow control checkbox
+        // Hardware flow control checkbox
         m_cb_flow_control[i] = new wxCheckBox(this, ID_CB_FLOW_CONTROL_1 + i, "");
         term_sizer->Add(m_cb_flow_control[i], 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+        
+        // Software flow control checkbox
+        m_cb_sw_flow_control[i] = new wxCheckBox(this, ID_CB_SW_FLOW_CONTROL_1 + i, "");
+        term_sizer->Add(m_cb_sw_flow_control[i], 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
         
         terminal_sizer->Add(term_sizer, 0, wxEXPAND | wxALL, 2);
     }
@@ -248,6 +258,7 @@ TermMuxCfgDlg::TermMuxCfgDlg(wxFrame *parent, CardCfgState &cfg) :
         Bind(wxEVT_TEXT, &TermMuxCfgDlg::OnComPortChange, this, ID_TC_COM_PORT_1 + i);
         Bind(wxEVT_CHOICE, &TermMuxCfgDlg::OnBaudRateChange, this, ID_CH_BAUD_RATE_1 + i);
         Bind(wxEVT_CHECKBOX, &TermMuxCfgDlg::OnFlowControlChange, this, ID_CB_FLOW_CONTROL_1 + i);
+        Bind(wxEVT_CHECKBOX, &TermMuxCfgDlg::OnSwFlowControlChange, this, ID_CB_SW_FLOW_CONTROL_1 + i);
     }
     
     Bind(wxEVT_BUTTON,   &TermMuxCfgDlg::OnButton,       this, -1);
@@ -266,6 +277,7 @@ TermMuxCfgDlg::updateDlg()
         std::string comPort = m_cfg.getTerminalComPort(i);
         int baudRate = m_cfg.getTerminalBaudRate(i);
         bool flowControl = m_cfg.getTerminalFlowControl(i);
+        bool swFlowControl = m_cfg.getTerminalSwFlowControl(i);
         
         // Set checkbox state
         m_cb_com_port[i]->SetValue(useCom);
@@ -287,6 +299,7 @@ TermMuxCfgDlg::updateDlg()
         
         // Set flow control
         m_cb_flow_control[i]->SetValue(flowControl);
+        m_cb_sw_flow_control[i]->SetValue(swFlowControl);
         
         // Enable/disable controls based on number of terminals and COM port checkbox
         bool terminalEnabled = (i < m_cfg.getNumTerminals());
@@ -294,6 +307,7 @@ TermMuxCfgDlg::updateDlg()
         m_tc_com_port[i]->Enable(terminalEnabled && useCom);
         m_ch_baud_rate[i]->Enable(terminalEnabled && useCom);
         m_cb_flow_control[i]->Enable(terminalEnabled && useCom);
+        m_cb_sw_flow_control[i]->Enable(terminalEnabled && useCom);
     }
 }
 
@@ -336,6 +350,7 @@ TermMuxCfgDlg::OnComPortChange(wxCommandEvent &event)
         m_tc_com_port[termIndex]->Enable(useCom);
         m_ch_baud_rate[termIndex]->Enable(useCom);
         m_cb_flow_control[termIndex]->Enable(useCom);
+        m_cb_sw_flow_control[termIndex]->Enable(useCom);
         
     } else if (controlId >= ID_TC_COM_PORT_1 && controlId <= ID_TC_COM_PORT_4) {
         termIndex = controlId - ID_TC_COM_PORT_1;
@@ -374,6 +389,19 @@ TermMuxCfgDlg::OnFlowControlChange(wxCommandEvent &event)
     if (termIndex >= 0 && termIndex < 4) {
         bool flowControl = m_cb_flow_control[termIndex]->GetValue();
         m_cfg.setTerminalFlowControl(termIndex, flowControl);
+    }
+    
+    m_btn_revert->Enable(m_cfg != m_old_cfg);
+}
+
+// handle software flow control changes
+void
+TermMuxCfgDlg::OnSwFlowControlChange(wxCommandEvent &event)
+{
+    int termIndex = event.GetId() - ID_CB_SW_FLOW_CONTROL_1;
+    if (termIndex >= 0 && termIndex < 4) {
+        bool swFlowControl = m_cb_sw_flow_control[termIndex]->GetValue();
+        m_cfg.setTerminalSwFlowControl(termIndex, swFlowControl);
     }
     
     m_btn_revert->Enable(m_cfg != m_old_cfg);
