@@ -3,6 +3,8 @@
 #include "host.h"
 
 #include <sstream>
+#include <string>
+#include <cassert>
 
 // ------------------------------------------------------------------------
 // public members
@@ -18,6 +20,9 @@ TermMuxCfgState::operator=(const TermMuxCfgState &rhs) noexcept
     // check for self-assignment
     if (this != &rhs) {
         m_num_terms   = rhs.m_num_terms;
+        for (int i = 0; i < 4; i++) {
+            m_terminals[i] = rhs.m_terminals[i];
+        }
         m_initialized = true;
     }
 
@@ -30,6 +35,9 @@ TermMuxCfgState::TermMuxCfgState(const TermMuxCfgState &obj) noexcept
 {
     assert(obj.m_initialized);
     m_num_terms   = obj.m_num_terms;
+    for (int i = 0; i < 4; i++) {
+        m_terminals[i] = obj.m_terminals[i];
+    }
     m_initialized = true;
 }
 
@@ -43,7 +51,18 @@ TermMuxCfgState::operator==(const CardCfgState &rhs) const noexcept
     assert(     m_initialized);
     assert(rrhs.m_initialized);
 
-    return (getNumTerminals() == rrhs.getNumTerminals());
+    bool equal = (getNumTerminals() == rrhs.getNumTerminals());
+    if (equal) {
+        for (int i = 0; i < getNumTerminals(); i++) {
+            if (m_terminals[i].com_port != rrhs.m_terminals[i].com_port ||
+                m_terminals[i].baud_rate != rrhs.m_terminals[i].baud_rate ||
+                m_terminals[i].flow_control != rrhs.m_terminals[i].flow_control) {
+                equal = false;
+                break;
+            }
+        }
+    }
+    return equal;
 }
 
 
@@ -73,6 +92,27 @@ TermMuxCfgState::loadIni(const std::string &subgroup)
         ival = 1;
     }
     setNumTerminals(ival);
+    
+    // Load per-terminal COM port settings
+    for (int i = 0; i < 4; i++) {
+        std::ostringstream oss;
+        oss << "terminal" << i << "_";
+        std::string term_prefix = oss.str();
+        
+        std::string com_port;
+        std::string default_port = "";  // Default empty port means GUI terminal
+        host::configReadStr(subgroup, term_prefix + "com_port", &com_port, &default_port);
+        m_terminals[i].com_port = com_port;
+        
+        int baud_rate;
+        host::configReadInt(subgroup, term_prefix + "baud_rate", &baud_rate, 19200);
+        m_terminals[i].baud_rate = baud_rate;
+        
+        int flow_control;
+        host::configReadInt(subgroup, term_prefix + "flow_control", &flow_control, 0);
+        m_terminals[i].flow_control = (flow_control != 0);
+    }
+    
     m_initialized = true;
 }
 
@@ -83,6 +123,17 @@ TermMuxCfgState::saveIni(const std::string &subgroup) const
 {
     assert(m_initialized);
     host::configWriteInt(subgroup, "numTerminals", getNumTerminals());
+    
+    // Save per-terminal COM port settings
+    for (int i = 0; i < 4; i++) {
+        std::ostringstream oss;
+        oss << "terminal" << i << "_";
+        std::string term_prefix = oss.str();
+        
+        host::configWriteStr(subgroup, term_prefix + "com_port", m_terminals[i].com_port);
+        host::configWriteInt(subgroup, term_prefix + "baud_rate", m_terminals[i].baud_rate);
+        host::configWriteInt(subgroup, term_prefix + "flow_control", m_terminals[i].flow_control ? 1 : 0);
+    }
 }
 
 
@@ -125,7 +176,65 @@ bool
 TermMuxCfgState::needsReboot(const CardCfgState &other) const noexcept
 {
     const TermMuxCfgState oother(dynamic_cast<const TermMuxCfgState&>(other));
-    return (getNumTerminals() != oother.getNumTerminals());
+    
+    if (getNumTerminals() != oother.getNumTerminals()) {
+        return true;
+    }
+    
+    // Check if any terminal COM port configuration changed
+    for (int i = 0; i < getNumTerminals(); i++) {
+        if (m_terminals[i].com_port != oother.m_terminals[i].com_port ||
+            m_terminals[i].baud_rate != oother.m_terminals[i].baud_rate ||
+            m_terminals[i].flow_control != oother.m_terminals[i].flow_control) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+// ------------ Per-terminal COM port configuration methods ------------
+
+void TermMuxCfgState::setTerminalComPort(int term_num, const std::string &port_name) noexcept
+{
+    assert(term_num >= 0 && term_num < 4);
+    m_terminals[term_num].com_port = port_name;
+}
+
+std::string TermMuxCfgState::getTerminalComPort(int term_num) const noexcept
+{
+    assert(term_num >= 0 && term_num < 4);
+    return m_terminals[term_num].com_port;
+}
+
+void TermMuxCfgState::setTerminalBaudRate(int term_num, int baud_rate) noexcept
+{
+    assert(term_num >= 0 && term_num < 4);
+    m_terminals[term_num].baud_rate = baud_rate;
+}
+
+int TermMuxCfgState::getTerminalBaudRate(int term_num) const noexcept
+{
+    assert(term_num >= 0 && term_num < 4);
+    return m_terminals[term_num].baud_rate;
+}
+
+void TermMuxCfgState::setTerminalFlowControl(int term_num, bool flow_control) noexcept
+{
+    assert(term_num >= 0 && term_num < 4);
+    m_terminals[term_num].flow_control = flow_control;
+}
+
+bool TermMuxCfgState::getTerminalFlowControl(int term_num) const noexcept
+{
+    assert(term_num >= 0 && term_num < 4);
+    return m_terminals[term_num].flow_control;
+}
+
+bool TermMuxCfgState::isTerminalComPort(int term_num) const noexcept
+{
+    assert(term_num >= 0 && term_num < 4);
+    return !m_terminals[term_num].com_port.empty();
 }
 
 // vim: ts=8:et:sw=4:smarttab

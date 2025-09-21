@@ -16,6 +16,7 @@
 #include "Scheduler.h"
 #include "TermMuxCfgState.h"
 #include "Terminal.h"
+#include "SerialPort.h"       // for COM port terminals
 #include "Ui.h"
 #include "host.h"             // for dbglog()
 #include "i8080.h"
@@ -96,6 +97,7 @@ IoCardTermMux::IoCardTermMux(std::shared_ptr<Scheduler> scheduler,
 
     for (auto &t : m_terms) {
         t.terminal = nullptr;
+        t.serial_port.reset();
 
         t.rx_ready = false;
         t.rx_byte  = 0x00;
@@ -126,9 +128,45 @@ IoCardTermMux::IoCardTermMux(std::shared_ptr<Scheduler> scheduler,
     const bool vp_mode = (cpu_type != Cpu2200::CPUTYPE_2200B)
                       && (cpu_type != Cpu2200::CPUTYPE_2200T);
     for(int n=0; n<m_num_terms; n++) {
-        m_terms[n].terminal =
-            std::make_unique<Terminal>(scheduler, this,
-                                       io_addr, n, UI_SCREEN_2236DE, vp_mode);
+        // Check if this terminal should use COM port
+        if (m_cfg.isTerminalComPort(n)) {
+            // Create and configure the serial port
+            auto serial_port = std::make_shared<SerialPort>(scheduler);
+            
+            SerialConfig serial_cfg;
+            serial_cfg.portName = m_cfg.getTerminalComPort(n);
+            serial_cfg.baudRate = m_cfg.getTerminalBaudRate(n);
+            serial_cfg.flowControl = m_cfg.getTerminalFlowControl(n);
+            serial_cfg.dataBits = 8;
+#ifdef _WIN32
+            serial_cfg.parity = ODDPARITY;  // Wang terminals typically use odd parity
+            serial_cfg.stopBits = ONESTOPBIT;
+#endif
+            
+            if (serial_port->open(serial_cfg)) {
+                // Store the serial port - NO GUI terminal for COM mode
+                m_terms[n].serial_port = serial_port;
+                m_terms[n].terminal.reset();  // No GUI terminal
+                
+                // Set up RX callback so serial → MXD works (will add this method)
+                serial_port->setReceiveCallback(
+                    [this, n](uint8 b){ this->serialToMxdRx(n, b); });
+                
+                dbglog("IoCardTermMux: Terminal %d connected to COM port %s at %d baud\n",
+                       n, m_cfg.getTerminalComPort(n).c_str(), m_cfg.getTerminalBaudRate(n));
+                continue;  // Skip GUI terminal creation
+            } else {
+                dbglog("IoCardTermMux: Failed to open COM port %s for terminal %d, using GUI instead\n",
+                       m_cfg.getTerminalComPort(n).c_str(), n);
+                // Fall through to GUI terminal creation
+            }
+        }
+        
+        // Create standard GUI terminal (fallback or when no COM port configured)
+        m_terms[n].serial_port.reset();  // Ensure no serial port
+        m_terms[n].terminal = std::make_unique<Terminal>(
+            scheduler, this, io_addr, n, UI_SCREEN_2236DE, vp_mode
+        );
     }
 }
 
@@ -141,6 +179,12 @@ IoCardTermMux::~IoCardTermMux()
         i8080_destroy(static_cast<i8080*>(m_i8080));
         m_i8080 = nullptr;
         for (auto &t : m_terms) {
+            // Clean up serial port connection if it exists
+            if (t.serial_port) {
+                t.serial_port->detachTerminal();
+                t.serial_port->close();
+                t.serial_port.reset();
+            }
             t.terminal = nullptr;
         }
     }
@@ -378,13 +422,20 @@ IoCardTermMux::updateInterrupt() noexcept
 }
 
 
-// a character has come in from the serial port
+// a character has come in from the GUI keyboard
 void
 IoCardTermMux::receiveKeystroke(int term_num, int keycode)
 {
     assert((0 <= term_num) && (term_num < MAX_TERMINALS));
     m_term_t &term = m_terms[term_num];
 
+    // If this terminal is connected to a COM port, ignore GUI keystrokes
+    // The physical terminal owns the input
+    if (term.serial_port) {
+        return;
+    }
+
+    // Handle GUI terminal keystrokes (existing behavior)
     if (term.rx_ready) {
 #ifdef _DEBUG
         UI_warn("terminal received char too fast");
@@ -431,8 +482,35 @@ IoCardTermMux::mxdToTermCallback(int term_num, int byte)
     m_term_t &term = m_terms[term_num];
     term.tx_tmr = nullptr;
 
-    term.terminal->processChar(static_cast<uint8>(byte));
+    // Route output to appropriate backend: serial port or GUI terminal
+    if (term.serial_port) {
+        // Send to physical terminal via COM port
+        term.serial_port->sendByte(static_cast<uint8>(byte));
+    } else if (term.terminal) {
+        // Send to GUI terminal
+        term.terminal->processChar(static_cast<uint8>(byte));
+    }
+    
     checkTxBuffer(term_num);
+}
+
+
+// Feed serial RX bytes back into the MXD UART
+void
+IoCardTermMux::serialToMxdRx(int term_num, uint8 byte)
+{
+    assert((0 <= term_num) && (term_num < MAX_TERMINALS));
+    m_term_t &term = m_terms[term_num];
+
+    // If an RX byte is already pending and the MXD hasn't read it yet,
+    // we could set an overrun bit here (not currently modeled)
+    if (!term.rx_ready) {
+        term.rx_byte  = byte;
+        term.rx_ready = true;
+        updateInterrupt();
+    }
+    // If rx_ready is true, the previous byte hasn't been read yet.
+    // In a real UART this would be an overrun condition.
 }
 
 // ============================================================================

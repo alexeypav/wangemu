@@ -61,6 +61,10 @@ public:
     // Data transmission (called by Terminal when user types)
     void sendByte(uint8 byte);
     void sendData(const uint8 *data, size_t length);
+    
+    // Receive callback for MXD integration
+    using RxCallback = std::function<void(uint8)>;
+    void setReceiveCallback(RxCallback cb);
 
 private:
     // Internal communication methods
@@ -75,6 +79,9 @@ private:
 
     std::shared_ptr<Scheduler> m_scheduler;
     std::shared_ptr<Terminal> m_terminal;
+    
+    // MXD receive callback
+    RxCallback m_rxCallback;
 
 #ifdef _WIN32
     HANDLE m_handle;

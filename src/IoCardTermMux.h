@@ -5,11 +5,13 @@
 
 #include "IoCard.h"
 #include "TermMuxCfgState.h"
+#include <memory>
 
 class Cpu2200;
 class Scheduler;
 class Timer;
 class Terminal;
+class SerialPort;
 
 class IoCardTermMux : public IoCard
 {
@@ -67,6 +69,9 @@ private:
 
     void checkTxBuffer(int term_num);
     void mxdToTermCallback(int term_num, int byte);
+    
+    // Handle bytes received from serial port
+    void serialToMxdRx(int term_num, uint8 byte);
 
     // ---- board state ----
     TermMuxCfgState            m_cfg;       // current configuration
@@ -94,6 +99,7 @@ private:
     struct m_term_t {
         // display related:
         std::unique_ptr<Terminal> terminal; // terminal model
+        std::shared_ptr<SerialPort> serial_port; // COM port (if used)
         // uart receive state
         bool                   rx_ready;    // received a byte
         int                    rx_byte;     // value of received byte

@@ -171,6 +171,11 @@ void SerialPort::detachTerminal()
     m_terminal.reset();
 }
 
+void SerialPort::setReceiveCallback(RxCallback cb)
+{
+    m_rxCallback = std::move(cb);
+}
+
 void SerialPort::sendByte(uint8 byte)
 {
     if (!isOpen()) {
@@ -251,8 +256,13 @@ void SerialPort::receiveThreadProc()
 
 void SerialPort::processReceivedByte(uint8 byte)
 {
+    // Send to MXD callback first (for COM port mode)
+    if (m_rxCallback) {
+        m_rxCallback(byte);
+    }
+    
+    // Also send to terminal if one is attached (legacy mode)
     if (m_terminal) {
-        // inject byte into Terminal pipeline
         m_terminal->processChar(byte);
     }
 }
@@ -359,6 +369,7 @@ bool  SerialPort::open(const SerialConfig &) { return false; }
 void  SerialPort::close() {}
 void  SerialPort::attachTerminal(std::shared_ptr<Terminal>) {}
 void  SerialPort::detachTerminal() {}
+void  SerialPort::setReceiveCallback(RxCallback) {}
 void  SerialPort::sendByte(uint8) {}
 void  SerialPort::sendData(const uint8*, size_t) {}
 void  SerialPort::startReceiving() {}
