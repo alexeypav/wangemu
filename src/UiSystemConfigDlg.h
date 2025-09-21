@@ -26,6 +26,9 @@ private:
     void OnAddrChoice(wxCommandEvent &event);
     void OnButton(wxCommandEvent &event);
     void OnWarnIo(wxCommandEvent& WXUNUSED(event));
+    void OnComPortChange(wxCommandEvent& WXUNUSED(event));
+    void OnBaudRateChange(wxCommandEvent& WXUNUSED(event));
+    void OnFlowControlChange(wxCommandEvent& WXUNUSED(event));
 
     wxChoice *m_cpu_type = nullptr;                 // B/T/VP/MVP/VLSI
     wxChoice *m_mem_size = nullptr;                 // main memory size
@@ -37,6 +40,14 @@ private:
     // hardware ignored such actions the emulator has support to catch such
     // actions, which is useful for debugging:
     wxCheckBox *m_warn_io = nullptr;
+
+    // COM port configuration controls for 2236WD terminal mode
+    wxStaticBox  *m_sb_com_port = nullptr;      // static box for COM port config
+    wxStaticText *m_lbl_com_port = nullptr;     // COM port label
+    wxTextCtrl   *m_tc_com_port = nullptr;      // COM port name text control
+    wxStaticText *m_lbl_baud_rate = nullptr;    // baud rate label  
+    wxChoice     *m_ch_baud_rate = nullptr;     // baud rate choice
+    wxCheckBox   *m_cb_flow_control = nullptr;  // flow control checkbox
 
     wxButton *m_btn_revert = nullptr;
     wxButton *m_btn_ok     = nullptr;
