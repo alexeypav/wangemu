@@ -18,6 +18,7 @@ struct crt_state_t;
 
 #include "Cpu2200.h"
 #include "Ui.h"
+#include "UiControlFrame.h"
 #include "UiCrtFrame.h"
 #include "UiDiskCtrlCfgDlg.h"
 #include "UiMyAboutDlg.h"
@@ -51,6 +52,15 @@ IMPLEMENT_APP(TheApp)
 // the application class
 // ----------------------------------------------------------------------------
 
+static bool want_control_frame_on_startup()
+{
+    // Heuristic: if there will be no GUI CRTs, return true.
+    // For now, always return true to show the control window
+    // TODO: Add logic to check if all terminals are COM-backed
+    // or add an INI flag or CLI switch
+    return true;
+}
+
 // `Main program' equivalent: the program execution "starts" here
 bool
 TheApp::OnInit()
@@ -75,6 +85,11 @@ TheApp::OnInit()
 
     system2200::initialize();  // build the world
     system2200::reset(true);   // cold start
+
+    // Check if we need a control window (when no GUI CRTs are present)
+    if (want_control_frame_on_startup()) {
+        (void) new ControlFrame();  // self-shows
+    }
 
     // must call base class version to get command line processing
     // if false, the app terminates
