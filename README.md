@@ -49,31 +49,82 @@ the website's [emu.html](http://www.wang2200.org/emu.html) page.
 
 Building on Windows
 ----------
-This project requires wxWidgets 3.1.7 to compile. Follow these steps:
+This project uses **static linking** with wxWidgets 3.1.7 to create standalone executables that require no external DLLs. Follow these steps:
 
-1. **Download wxWidgets 3.1.7:**
-   - Download the following files from https://www.wxwidgets.org/downloads/:
-     - wxWidgets-3.1.7-headers.7z
-     - wxMSW-3.1.7_vc14x_Dev.7z  
-     - wxMSW-3.1.7_vc14x_ReleaseDLL.7z
+### Prerequisites
+- Visual Studio 2019 or later with C++ development tools
+- Developer Command Prompt for VS
 
-2. **Install wxWidgets:**
-   - Extract all files to `C:\wxWidgets-3.1.7`
-   - Set environment variable: `WXWIN=C:\wxWidgets-3.1.7`
-   - Restart Visual Studio
+### 1. Download and Extract wxWidgets Source
+```bash
+# Download wxWidgets 3.1.7 source code from:
+# https://github.com/wxWidgets/wxWidgets/releases/tag/v3.1.7
+# Extract to: C:\wxWidgets-3.1.7
+```
 
-3. **Copy Runtime DLLs:**
-   After compiling, copy the required DLLs from `C:\wxWidgets-3.1.7\lib\vc14x_dll\` to your output directory:
+### 2. Set Environment Variable
+```bash
+# Set WXWIN environment variable (required)
+set WXWIN=C:\wxWidgets-3.1.7
 
-   **For Debug builds:**
-   - wxbase317ud_vc14x.dll
-   - wxmsw317ud_core_vc14x.dll
-   - wxmsw317ud_adv_vc14x.dll
+# Or set permanently via System Properties > Environment Variables
+# Then restart Visual Studio
+```
 
-   **For Release builds:**
-   - wxbase317u_vc14x.dll
-   - wxmsw317u_core_vc14x.dll
-   - wxmsw317u_adv_vc14x.dll
+### 3. Build wxWidgets Static Libraries
+
+Open **Developer Command Prompt for VS** and run:
+
+```bash
+cd C:\wxWidgets-3.1.7\build\msw
+
+# Clean any previous builds
+nmake -f makefile.vc clean
+
+# Build static release libraries
+nmake -f makefile.vc SHARED=0 UNICODE=1 BUILD=release RUNTIME_LIBS=static
+
+# Build static debug libraries
+nmake -f makefile.vc SHARED=0 UNICODE=1 BUILD=debug RUNTIME_LIBS=static
+```
+
+### 4. Verify Build
+```bash
+# Check that static libraries were created
+dir C:\wxWidgets-3.1.7\lib\vc_lib\*.lib
+
+# Verify setup.h files exist
+dir C:\wxWidgets-3.1.7\lib\vc_lib\mswu\wx\setup.h
+dir C:\wxWidgets-3.1.7\lib\vc_lib\mswud\wx\setup.h
+```
+
+### 5. Build wangemu
+- Open `wangemu.sln` in Visual Studio
+- Select Debug or Release configuration
+- Build the project
+
+The resulting `wangemu.exe` will be **completely standalone** - no DLL files needed for distribution!
+
+### Clean Commands
+```bash
+# Clean only debug build
+nmake -f makefile.vc clean BUILD=debug
+
+# Clean only release build  
+nmake -f makefile.vc clean BUILD=release
+
+# Clean everything
+nmake -f makefile.vc clean
+
+# Clean wangemu build artifacts
+del Release\*.obj Release\*.pdb Release\*.pch
+del Debug\*.obj Debug\*.pdb Debug\*.pch
+```
+
+### Troubleshooting
+- **"Cannot open include file: 'wx/setup.h'"**: wxWidgets not built yet - run step 3
+- **Runtime library mismatch errors**: Ensure `RUNTIME_LIBS=static` was used in step 3
+- **"target does not exist" errors**: Clean completely and rebuild from step 3
 
 License
 ----------
