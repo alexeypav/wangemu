@@ -1,3 +1,20 @@
+This is a modified version of wangemu - forked from https://github.com/jtbattle/wangemu
+
+Added support for:
+
+Serial communication over the host's com ports
+Using the emulator as a Wang terminal connected to a real Wang2200 system
+Connecting a Wang terminal via the host's com port to the emulator
+
+Tested with a Wang 2336DW Terminal and Wang MicroVP System
+
+This modifications are only currently supported on Windows (Serial comms), tested on Windows 10
+
+Updated build instructions at the bottom
+
+(Most of the extra code to support serial communication was done with Claude Code, so I can't comment on the quality, leaving this here as a disclaimer, however without LLM help this would have taken me so long it probably wouldn't have happened)
+
+
 Wang 2200 Emulator
 ==================
 
@@ -46,6 +63,85 @@ the Wang 2200 computer, located at
 Traditionally, on each release, a zip file containing the source
 code, some notes, and a precompiled binary has been published to
 the website's [emu.html](http://www.wang2200.org/emu.html) page.
+
+Building on Windows
+----------
+This project uses **static linking** with wxWidgets 3.1.7 to create standalone executables that require no external DLLs. Follow these steps:
+
+### Prerequisites
+- Visual Studio 2019 or later with C++ development tools
+- Developer Command Prompt for VS
+
+### 1. Download and Extract wxWidgets Source
+```bash
+# Download wxWidgets 3.1.7 source code from:
+# https://github.com/wxWidgets/wxWidgets/releases/tag/v3.1.7
+# Extract to: C:\wxWidgets-3.1.7
+```
+
+### 2. Set Environment Variable
+```bash
+# Set WXWIN environment variable (required)
+set WXWIN=C:\wxWidgets-3.1.7
+
+# Or set permanently via System Properties > Environment Variables
+# Then restart Visual Studio
+```
+
+### 3. Build wxWidgets Static Libraries
+
+Open **Developer Command Prompt for VS** and run:
+
+```bash
+cd C:\wxWidgets-3.1.7\build\msw
+
+# Clean any previous builds
+nmake -f makefile.vc clean
+
+# Build static release libraries
+nmake -f makefile.vc SHARED=0 UNICODE=1 BUILD=release RUNTIME_LIBS=static
+
+# Build static debug libraries
+nmake -f makefile.vc SHARED=0 UNICODE=1 BUILD=debug RUNTIME_LIBS=static
+```
+
+### 4. Verify Build
+```bash
+# Check that static libraries were created
+dir C:\wxWidgets-3.1.7\lib\vc_lib\*.lib
+
+# Verify setup.h files exist
+dir C:\wxWidgets-3.1.7\lib\vc_lib\mswu\wx\setup.h
+dir C:\wxWidgets-3.1.7\lib\vc_lib\mswud\wx\setup.h
+```
+
+### 5. Build wangemu
+- Open `wangemu.sln` in Visual Studio
+- Select Debug or Release configuration
+- Build the project
+
+The resulting `wangemu.exe` will be **completely standalone** - no DLL files needed for distribution!
+
+### Clean Commands
+```bash
+# Clean only debug build
+nmake -f makefile.vc clean BUILD=debug
+
+# Clean only release build  
+nmake -f makefile.vc clean BUILD=release
+
+# Clean everything
+nmake -f makefile.vc clean
+
+# Clean wangemu build artifacts
+del Release\*.obj Release\*.pdb Release\*.pch
+del Debug\*.obj Debug\*.pdb Debug\*.pch
+```
+
+### Troubleshooting
+- **"Cannot open include file: 'wx/setup.h'"**: wxWidgets not built yet - run step 3
+- **Runtime library mismatch errors**: Ensure `RUNTIME_LIBS=static` was used in step 3
+- **"target does not exist" errors**: Clean completely and rebuild from step 3
 
 License
 ----------

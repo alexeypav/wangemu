@@ -16,6 +16,7 @@
 #include "Scheduler.h"
 #include "TermMuxCfgState.h"
 #include "Terminal.h"
+#include "SerialPort.h"       // for COM port terminals
 #include "Ui.h"
 #include "host.h"             // for dbglog()
 #include "i8080.h"
@@ -96,6 +97,7 @@ IoCardTermMux::IoCardTermMux(std::shared_ptr<Scheduler> scheduler,
 
     for (auto &t : m_terms) {
         t.terminal = nullptr;
+        t.serial_port.reset();
 
         t.rx_ready = false;
         t.rx_byte  = 0x00;
@@ -126,9 +128,47 @@ IoCardTermMux::IoCardTermMux(std::shared_ptr<Scheduler> scheduler,
     const bool vp_mode = (cpu_type != Cpu2200::CPUTYPE_2200B)
                       && (cpu_type != Cpu2200::CPUTYPE_2200T);
     for(int n=0; n<m_num_terms; n++) {
-        m_terms[n].terminal =
-            std::make_unique<Terminal>(scheduler, this,
-                                       io_addr, n, UI_SCREEN_2236DE, vp_mode);
+        // Check if this terminal should use COM port
+        if (m_cfg.isTerminalComPort(n)) {
+            // Create and configure the serial port
+            auto serial_port = std::make_shared<SerialPort>(scheduler);
+            
+            SerialConfig serial_cfg;
+            serial_cfg.portName = m_cfg.getTerminalComPort(n);
+            serial_cfg.baudRate = m_cfg.getTerminalBaudRate(n);
+            // Hardware flow control (RTS/CTS) is disabled for Wang terminals since they don't support it
+            serial_cfg.hwFlowControl = false;
+            serial_cfg.swFlowControl = m_cfg.getTerminalSwFlowControl(n);
+            serial_cfg.dataBits = 8;
+#ifdef _WIN32
+            serial_cfg.parity = ODDPARITY;  // Wang terminals typically use odd parity
+            serial_cfg.stopBits = ONESTOPBIT;
+#endif
+            
+            if (serial_port->open(serial_cfg)) {
+                // Store the serial port - NO GUI terminal for COM mode
+                m_terms[n].serial_port = serial_port;
+                m_terms[n].terminal.reset();  // No GUI terminal
+                
+                // Set up RX callback so serial → MXD works (using new FIFO-based method)
+                serial_port->setReceiveCallback(
+                    [this, n](uint8 b){ this->serialRxByte(n, b); });
+                
+                dbglog("IoCardTermMux: Terminal %d connected to COM port %s at %d baud\n",
+                       n, m_cfg.getTerminalComPort(n).c_str(), m_cfg.getTerminalBaudRate(n));
+                continue;  // Skip GUI terminal creation
+            } else {
+                dbglog("IoCardTermMux: Failed to open COM port %s for terminal %d, using GUI instead\n",
+                       m_cfg.getTerminalComPort(n).c_str(), n);
+                // Fall through to GUI terminal creation
+            }
+        }
+        
+        // Create standard GUI terminal (fallback or when no COM port configured)
+        m_terms[n].serial_port.reset();  // Ensure no serial port
+        m_terms[n].terminal = std::make_unique<Terminal>(
+            scheduler, this, io_addr, n, UI_SCREEN_2236DE, vp_mode
+        );
     }
 }
 
@@ -141,6 +181,12 @@ IoCardTermMux::~IoCardTermMux()
         i8080_destroy(static_cast<i8080*>(m_i8080));
         m_i8080 = nullptr;
         for (auto &t : m_terms) {
+            // Clean up serial port connection if it exists
+            if (t.serial_port) {
+                t.serial_port->detachTerminal();
+                t.serial_port->close();
+                t.serial_port.reset();
+            }
             t.terminal = nullptr;
         }
     }
@@ -371,31 +417,28 @@ IoCardTermMux::updateRbi() noexcept
 void
 IoCardTermMux::updateInterrupt() noexcept
 {
-    m_interrupt_pending = m_terms[0].rx_ready
-                       || m_terms[1].rx_ready
-                       || m_terms[2].rx_ready
-                       || m_terms[3].rx_ready;
+    m_interrupt_pending = !m_terms[0].rx_fifo.empty()
+                       || !m_terms[1].rx_fifo.empty()
+                       || !m_terms[2].rx_fifo.empty()
+                       || !m_terms[3].rx_fifo.empty();
 }
 
 
-// a character has come in from the serial port
+// a character has come in from the GUI keyboard
 void
 IoCardTermMux::receiveKeystroke(int term_num, int keycode)
 {
     assert((0 <= term_num) && (term_num < MAX_TERMINALS));
     m_term_t &term = m_terms[term_num];
 
-    if (term.rx_ready) {
-#ifdef _DEBUG
-        UI_warn("terminal received char too fast");
-#endif
-        // TODO: set uart overrun status bit?
-        // then fall through because the old char is overwritten
+    // If this terminal is connected to a COM port, ignore GUI keystrokes
+    // The physical terminal owns the input
+    if (term.serial_port) {
+        return;
     }
-    term.rx_ready = true;
-    term.rx_byte  = keycode;
 
-    updateInterrupt();
+    // Use the new FIFO-based approach for GUI terminals too (consistency)
+    queueRxByte(term_num, static_cast<uint8_t>(keycode));
 }
 
 
@@ -431,8 +474,55 @@ IoCardTermMux::mxdToTermCallback(int term_num, int byte)
     m_term_t &term = m_terms[term_num];
     term.tx_tmr = nullptr;
 
-    term.terminal->processChar(static_cast<uint8>(byte));
+    // Route output to appropriate backend: serial port or GUI terminal
+    if (term.serial_port) {
+        // Send to physical terminal via COM port
+        term.serial_port->sendByte(static_cast<uint8>(byte));
+    } else if (term.terminal) {
+        // Send to GUI terminal
+        term.terminal->processChar(static_cast<uint8>(byte));
+    }
+    
     checkTxBuffer(term_num);
+}
+
+
+// Feed serial RX bytes back into the MXD UART (legacy method - kept for compatibility)
+void
+IoCardTermMux::serialToMxdRx(int term_num, uint8 byte)
+{
+    // Use the new FIFO-based approach instead of the old single-byte latch
+    queueRxByte(term_num, byte);
+}
+
+
+// New FIFO-based RX methods for reliable multi-byte key sequences
+void
+IoCardTermMux::queueRxByte(int term_num, uint8_t byte)
+{
+    assert((0 <= term_num) && (term_num < MAX_TERMINALS));
+    auto &t = m_terms[term_num];
+    
+    if (t.rx_fifo.size() >= RX_FIFO_MAX) {
+        // Drop oldest to avoid hard-stall; count a stat
+        t.rx_fifo.pop_front();
+        ++t.rx_overrun_drops;
+    }
+    t.rx_fifo.push_back(byte);
+
+    // This should assert the card's RxRDY/interrupt state like the prior rx_ready did
+    updateInterrupt();
+}
+
+
+void
+IoCardTermMux::serialRxByte(int term_num, uint8_t byte)
+{
+    // Raw Wang terminal bytes from 2336DW arrive here. Do NOT VT/ANSI-translate.
+    // Normalize CR/LF if your system requires (usually leave as-is; CR=0x0D).
+    // if (byte == 0x0A) return; // example: drop bare LF if you previously did that
+
+    queueRxByte(term_num, byte);
 }
 
 // ============================================================================
@@ -523,25 +613,30 @@ IoCardTermMux::i8080_in_func(int addr, void *user_data) noexcept
         break;
 
     case IN_UART_RXRDY:
-        rv = (tthis->m_terms[3].rx_ready ? 0x08 : 0x00)
-           | (tthis->m_terms[2].rx_ready ? 0x04 : 0x00)
-           | (tthis->m_terms[1].rx_ready ? 0x02 : 0x00)
-           | (tthis->m_terms[0].rx_ready ? 0x01 : 0x00);
+        rv = (!tthis->m_terms[3].rx_fifo.empty() ? 0x08 : 0x00)
+           | (!tthis->m_terms[2].rx_fifo.empty() ? 0x04 : 0x00)
+           | (!tthis->m_terms[1].rx_fifo.empty() ? 0x02 : 0x00)
+           | (!tthis->m_terms[0].rx_fifo.empty() ? 0x01 : 0x00);
         break;
 
     case IN_UART_DATA:
-        rv = static_cast<uint8>(term.rx_byte);
-        // reading the data has the side effect of clearing the rxrdy status
-        term.rx_ready = false;
+        if (!term.rx_fifo.empty()) {
+            rv = term.rx_fifo.front();
+            term.rx_fifo.pop_front();
+        } else {
+            rv = 0x00;  // Return 0 if FIFO is empty
+        }
+        // After consuming, update status/IRQ
         tthis->updateInterrupt();
         break;
 
     case IN_UART_STATUS:
         {
         const bool tx_empty = term.tx_ready && !term.tx_tmr;
+        const bool rx_ready = !term.rx_fifo.empty();
         const bool dsr = (term_num < tthis->m_num_terms);
         rv = (term.tx_ready ? 0x01 : 0x00)  // [0] = tx fifo empty
-           | (term.rx_ready ? 0x02 : 0x00)  // [1] = rx fifo has a byte
+           | (rx_ready      ? 0x02 : 0x00)  // [1] = rx fifo has a byte
            | (tx_empty      ? 0x04 : 0x00)  // [2] = tx serializer and fifo empty
            | (false         ? 0x08 : 0x00)  // [3] = parity error
            | (false         ? 0x10 : 0x00)  // [4] = overrun error

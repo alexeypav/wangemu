@@ -26,11 +26,16 @@
 
 #include "IoCardKeyboard.h"
 #include "IoCardTermMux.h"
+#include "SerialPort.h"
 #include "Scheduler.h"
 #include "Terminal.h"
 #include "Ui.h"
 #include "host.h"              // for dbglog()
 #include "system2200.h"
+#include <chrono>
+#include <algorithm>
+#undef min
+#undef max
 
 bool do_debug = false;
 
@@ -46,6 +51,7 @@ Terminal::Terminal(std::shared_ptr<Scheduler> scheduler,
                    bool vp_cpu) :
     m_scheduler(scheduler),
     m_muxd(muxd),
+    //m_serialPort(nullptr),
     m_vp_cpu(vp_cpu),
     m_io_addr(io_addr),
     m_term_num(term_num)
@@ -78,13 +84,59 @@ Terminal::Terminal(std::shared_ptr<Scheduler> scheduler,
     }
 }
 
+// Constructor for COM port terminal mode
+Terminal::Terminal(std::shared_ptr<Scheduler> scheduler,
+                   std::shared_ptr<SerialPort> serialPort,
+                   int io_addr, int term_num, ui_screen_t screen_type) :
+    m_scheduler(scheduler),
+    m_muxd(nullptr),
+    m_serialPort(serialPort),
+    m_vp_cpu(false),  // COM port terminals don't need CPU throttling
+    m_io_addr(io_addr),
+    m_term_num(term_num)
+{
+    m_disp.screen_type = screen_type;
+    m_disp.chars_w  = (screen_type == UI_SCREEN_64x16)  ? 64 : 80;
+    m_disp.chars_h  = (screen_type == UI_SCREEN_64x16)  ? 16 : 24;
+    m_disp.chars_h2 = (screen_type == UI_SCREEN_2236DE) ? 25 : m_disp.chars_h;
+
+    reset(true);
+
+    m_wndhnd = UI_displayInit(screen_type, m_io_addr, m_term_num, &m_disp);
+    assert(m_wndhnd);
+
+    const bool smart_term = (screen_type == UI_SCREEN_2236DE);
+    if (smart_term) {
+    // Register keyboard callback for COM port mode
+    // Use the low-8 “keyboard” offset (m_io_addr low byte + 1),
+    // so it matches how MUX terminals are addressed.
+        const int kb_addr = ( (m_io_addr & 0xFF) + 0x01 ) & 0xFF;
+        system2200::registerKb(
+            kb_addr, m_term_num,
+            std::bind(&Terminal::receiveKeystroke, this, std::placeholders::_1)
+        );
+
+        // Delay the power-on init a bit to ensure COM is fully stable
+        m_init_tmr = m_scheduler->createTimer(
+            TIMER_MS(600),
+            std::bind(&Terminal::sendInitSeq, this)
+        );
+    }
+}
 
 // free resources on destruction
 Terminal::~Terminal()
 {
     const bool smart_term = (m_disp.screen_type == UI_SCREEN_2236DE);
     if (smart_term) {
-        system2200::unregisterKb(m_io_addr+0x01, m_term_num);
+        if (m_muxd) {
+            // MUX mode
+            system2200::unregisterKb(m_io_addr+0x01, m_term_num);
+        } else if (m_serialPort) {
+            // COM port mode
+            int kb_addr = 0x01;
+            system2200::unregisterKb(kb_addr, m_term_num);
+        }
     }
 
     m_init_tmr    = nullptr;
@@ -225,7 +277,8 @@ void
 Terminal::receiveKeystroke(int keycode)
 {
     if (m_kb_buff.size() >= KB_BUFF_MAX) {
-        UI_warn("the terminal keyboard buffer dropped a character");
+        UI_warn("the terminal keyboard buffer dropped a character (buffer size: %d, keycode: 0x%02X)", 
+                static_cast<int>(m_kb_buff.size()), keycode);
         return;
     }
 
@@ -277,6 +330,7 @@ Terminal::checkKbBuffer()
         // serial channel is in use
         return;
     }
+    
 
     if (m_kb_buff.empty() && (m_crt_flow_state != flow_state_t::STOP_PEND)
                           && (m_crt_flow_state != flow_state_t::GO_PEND)) {
@@ -314,11 +368,7 @@ Terminal::checkKbBuffer()
         } else {
             // this is good enough for entering programs into empty memory,
             // but if the input is merging with an existing program, causing
-            // a lot of end-of-line processing, things break down.  maybe a
-            // better fix is to not invoke the script polling here but instead
-            // from inside the IoCardTermMux code -- it knows when the CPU
-            // is waiting for a byte.  Here we could make the serial port
-            // delay tiny and just feed the bytes on demand.  TODO: think
+            // a lot of end-of-line processing, things break down.
             delay *= ((byte == 0x0D) ? 150 : 7);
         }
     }
@@ -329,6 +379,7 @@ Terminal::checkKbBuffer()
     if (active_scripts > 1) {
         delay *= active_scripts;
     }
+    
 
     // unfortunately, the "CLEAR" command (which starts all the scripts
     // distributed with wangemu) takes a long time to execute, and the
@@ -343,27 +394,22 @@ Terminal::checkKbBuffer()
     // the RX fifo is and somehow throttle this code from sending any
     // characters if it was in danger of overrunning.  that would be a big
     // and ugly hammer.
+
+
     m_kb_recent.push_back(byte);
     const int fifo_size = m_kb_recent.size();
     if (fifo_size > 7) {
         m_kb_recent.pop_front();
         if (m_script_active) {
             std::vector<uint8> k{m_kb_recent.begin(), m_kb_recent.end()}; // convert deque to vector
-            if (   (k[0] == 'C')
-                && (k[1] == 'L')
-                && (k[2] == 'E')
-                && (k[3] == 'A')
-                && (k[4] == 'R')
-                && (k[5] == 0x0D)) {
-                delay = TIMER_MS(1000);
-            }
         }
     }
 
+    // normal path
     m_tx_tmr = m_scheduler->createTimer(
-                   delay,
-                   std::bind(&Terminal::termToMxdCallback, this, byte)
-               );
+        delay, std::bind(&Terminal::termToMxdCallback, this, byte)
+    );
+
 }
 
 
@@ -371,12 +417,35 @@ Terminal::checkKbBuffer()
 void
 Terminal::termToMxdCallback(int key)
 {
+    dbglog("TIMER CALLBACK EXECUTED: byte=0x%02X, clearing m_tx_tmr\n", key);
     m_tx_tmr = nullptr;
-    m_muxd->receiveKeystroke(m_term_num, key);
+    
+    if (m_muxd) {
+        // Original MUX mode - send to Wang 2200 CPU
+        m_muxd->receiveKeystroke(m_term_num, key);
+        
+        // poll for script input, but don't let it overrun the key buffer
+        if (m_kb_buff.size() < 5) {
+            m_script_active = system2200::pollScriptInput(m_io_addr+0x01, m_term_num);
+        }
+    } else if (m_serialPort) {
+        // COM port mode - send to real Wang 2200 via serial port
+        m_serialPort->sendByte(static_cast<uint8>(key));
 
-    // poll for script input, but don't let it overrun the key buffer
-    if (m_kb_buff.size() < 5) {
-        m_script_active = system2200::pollScriptInput(m_io_addr+0x01, m_term_num);
+        // Add actual sleep delay for script characters since scheduler timers don't work properly
+        if (m_script_active) {
+            if (key == 0x0D) {
+                std::this_thread::sleep_for(std::chrono::microseconds(400));  // Extra delay for CR (2x faster: 0.8ms → 0.4ms)
+            } else {
+                std::this_thread::sleep_for(std::chrono::microseconds(100));  // Base delay for normal chars (2x faster: 0.2ms → 0.1ms)
+            }
+        }
+
+       // Keep the script flowing: poll for the next byte using the *registered* kb addr
+       if (m_kb_buff.size() < 5) {
+           const int kb_addr = ( (m_io_addr & 0xFF) + 0x01 ) & 0xFF;
+           m_script_active = system2200::pollScriptInput(kb_addr, m_term_num);
+       }
     }
 
     // see if any other chars are pending
@@ -1005,6 +1074,12 @@ Terminal::processCrtChar3(uint8 byte)
 
         case 0x03:      // clear screen
             clearScreen();
+// #ifdef STANDALONE_TERMINAL
+//             if (m_serialPort) {
+//                 // Clear console screen (Windows)
+//                 system("cls");
+//             }
+// #endif
             break;
 
         case 0x05:      // enable cursor
@@ -1021,6 +1096,12 @@ Terminal::processCrtChar3(uint8 byte)
 
         case 0x08:      // cursor left
             adjustCursorX(-1);
+// #ifdef STANDALONE_TERMINAL
+//             if (m_serialPort) {
+//                 printf("\b");
+//                 fflush(stdout);
+//             }
+// #endif
             break;
 
         case 0x09:      // horizontal tab
@@ -1029,6 +1110,12 @@ Terminal::processCrtChar3(uint8 byte)
 
         case 0x0A:      // linefeed (go down one column)
             adjustCursorY(+1);
+// #ifdef STANDALONE_TERMINAL
+//             if (m_serialPort) {
+//                 printf("\n");
+//                 fflush(stdout);
+//             }
+// #endif
             break;
 
         case 0x0C:      // reverse index (cursor up)
@@ -1037,6 +1124,12 @@ Terminal::processCrtChar3(uint8 byte)
 
         case 0x0D:      // go to first column
             setCursorX(0);
+// #ifdef STANDALONE_TERMINAL
+//             if (m_serialPort) {
+//                 printf("\r");
+//                 fflush(stdout);
+//             }
+// #endif
             break;
 
         default:        // just a character

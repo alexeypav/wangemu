@@ -1,0 +1,24 @@
+10 REM Wang BASIC-2 Timing Test Script
+20 PRINT "Testing improved COM port timing..."
+30 PRINT
+40 REM Test simple loop
+50 FOR I=1 TO 5
+60 PRINT "Count: ";I
+70 NEXT I
+80 PRINT
+90 REM Test string handling  
+100 PRINT "Hello Wang 2200!"
+110 PRINT
+120 REM Test conditional logic
+130 N=42
+140 IF N>40 THEN 160
+150 PRINT "N is small":GOTO 170
+160 PRINT "N is large"
+170 PRINT
+180 REM Test subroutine
+190 GOSUB 1000
+200 PRINT "Script completed successfully!"
+210 END
+1000 REM Simple subroutine
+1010 PRINT "This is a subroutine call"
+1020 RETURN

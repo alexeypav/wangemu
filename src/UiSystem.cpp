@@ -18,6 +18,7 @@ struct crt_state_t;
 
 #include "Cpu2200.h"
 #include "Ui.h"
+#include "UiControlFrame.h"
 #include "UiCrtFrame.h"
 #include "UiDiskCtrlCfgDlg.h"
 #include "UiMyAboutDlg.h"
@@ -33,6 +34,8 @@ struct crt_state_t;
 
 #include "wx/cmdline.h"         // req'd by wxCmdLineParser
 #include "wx/filename.h"
+#include <wx/app.h>
+#include <wx/thread.h>
 
 // ============================================================================
 // implementation
@@ -48,6 +51,15 @@ IMPLEMENT_APP(TheApp)
 // ----------------------------------------------------------------------------
 // the application class
 // ----------------------------------------------------------------------------
+
+static bool want_control_frame_on_startup()
+{
+    // Heuristic: if there will be no GUI CRTs, return true.
+    // For now, always return true to show the control window
+    // TODO: Add logic to check if all terminals are COM-backed
+    // or add an INI flag or CLI switch
+    return true;
+}
 
 // `Main program' equivalent: the program execution "starts" here
 bool
@@ -73,6 +85,11 @@ TheApp::OnInit()
 
     system2200::initialize();  // build the world
     system2200::reset(true);   // cold start
+
+    // Check if we need a control window (when no GUI CRTs are present)
+    if (want_control_frame_on_startup()) {
+        (void) new ControlFrame();  // self-shows
+    }
 
     // must call base class version to get command line processing
     // if false, the app terminates
@@ -348,6 +365,7 @@ UI_displayInit(const int screen_type, const int io_addr, const int term_num,
                         : (cpu_type == Cpu2200::CPUTYPE_MVP)     ? "2200MVP"
                         : (cpu_type == Cpu2200::CPUTYPE_MVPC)    ? "2200MVP-C"
                         : (cpu_type == Cpu2200::CPUTYPE_MICROVP) ? "MicroVP"
+                        : (cpu_type == Cpu2200::CPUTYPE_2236WD)  ? "2236WD Terminal"
                                                                  : "unknown cpu";
 
     const char *disp_str = "unknown";
@@ -385,10 +403,20 @@ UI_displayDestroy(CrtFrame *wnd)
 
 
 // create a bell (0x07) sound for the given terminal
-void UI_displayDing(CrtFrame *wnd)
+void
+UI_displayDing(CrtFrame *wnd)
 {
     assert(wnd != nullptr);
-    wnd->ding();
+    // If we're already on the UI thread, call directly.
+    if (wxThread::IsMain()) {
+        wnd->ding();
+        return;
+    }
+    // Otherwise, marshal to the main thread.
+    wxTheApp->CallAfter([wnd]{
+        // wnd is owned by the UI, so this is safe once we're on the UI thread.
+        wnd->ding();
+    });
 }
 
 

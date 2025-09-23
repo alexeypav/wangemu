@@ -13,6 +13,7 @@ class CrtFrame;
 class Scheduler;
 class Timer;
 class IoCardTermMux;
+class SerialPort;
 enum ui_screen_t : int;
 
 class Terminal
@@ -20,10 +21,16 @@ class Terminal
 public:
     CANT_ASSIGN_OR_COPY_CLASS(Terminal);
 
+    // Constructor for emulated Wang 2200 system (original)
     Terminal(std::shared_ptr<Scheduler> scheduler,
              IoCardTermMux *muxd,
              int io_addr, int term_num, ui_screen_t screen_type,
              bool vp_cpu);
+    
+    // Constructor for COM port terminal (new)
+    Terminal(std::shared_ptr<Scheduler> scheduler,
+             std::shared_ptr<SerialPort> serialPort,
+             int io_addr, int term_num, ui_screen_t screen_type);
     ~Terminal();
 
     // hardware reset
@@ -31,6 +38,9 @@ public:
 
     // send a character to the display controller
     void processChar(uint8 byte);
+    
+    // get the IO address for this terminal
+    int getIoAddr() const { return m_io_addr; }
 
     // character transmission time, in nanoseconds
     static const int64 serial_char_delay =
@@ -117,7 +127,8 @@ private:
 
     // ---- state ----
     std::shared_ptr<Scheduler> m_scheduler; // shared event scheduler
-    IoCardTermMux *m_muxd;          // nullptr if dumb term
+    IoCardTermMux *m_muxd;          // nullptr if COM port mode
+    std::shared_ptr<SerialPort> m_serialPort;  // nullptr if MUX mode
     const bool     m_vp_cpu;        // scripting throttle needs this info
 
     // display state and geometry
@@ -174,8 +185,16 @@ private:
 
     // write 1 character to the video memory at location (x,y).
     // it is up to the caller to set the screen dirty flag.
-    inline void screenWriteChar(int x, int y, uint8 ch) noexcept
-        { m_disp.display[m_disp.chars_w*y + x] = ch; }
+    inline void screenWriteChar(int x, int y, uint8 ch) noexcept { 
+        m_disp.display[m_disp.chars_w*y + x] = ch;
+#ifdef STANDALONE_TERMINAL
+        // In COM terminal mode, immediately output to console
+        if (m_serialPort && ch >= 0x20 && ch <= 0x7E) {
+            printf("%c", ch);
+            fflush(stdout);
+        }
+#endif
+    }
     inline void screenWriteAttr(int x, int y, uint8 attr) noexcept
         { m_disp.attr[m_disp.chars_w*y + x] = attr; }
 

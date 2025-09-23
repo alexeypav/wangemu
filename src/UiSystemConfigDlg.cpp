@@ -42,7 +42,12 @@ enum
     // ... leave room for other slots
     ID_SLOTN_BTN_CONFIG = 262,
 
-    ID_BTN_REVERT = 400
+    ID_BTN_REVERT = 400,
+
+    // 2236WD terminal COM port controls
+    ID_COM_PORT_TEXT = 500,
+    ID_BAUD_RATE_CHOICE,
+    ID_FLOW_CONTROL_CHK
 };
 
 
@@ -110,10 +115,41 @@ SystemConfigDlg::SystemConfigDlg(wxFrame *parent) :
     m_warn_io = new wxCheckBox(this, ID_CHK_WARN_IO,
                                      "Warn on Invalid IO Device Access");
 
+    // COM port configuration controls for 2236WD terminal mode
+    m_sb_com_port = new wxStaticBox(this, -1, "2236WD Terminal COM Port Configuration");
+    wxStaticBoxSizer *com_port_sizer = new wxStaticBoxSizer(m_sb_com_port, wxVERTICAL);
+    
+    wxFlexGridSizer *com_grid = new wxFlexGridSizer(3, 2, fgs_vgap, fgs_hgap);
+    com_grid->AddGrowableCol(1, 1);
+    
+    // COM port name
+    m_lbl_com_port = new wxStaticText(this, -1, "COM Port:");
+    m_tc_com_port = new wxTextCtrl(this, ID_COM_PORT_TEXT, "");
+    com_grid->Add(m_lbl_com_port, 0, wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL | wxRIGHT, h_text_margin);
+    com_grid->Add(m_tc_com_port, 1, wxGROW | wxALIGN_CENTER_VERTICAL);
+    
+    // Baud rate
+    m_lbl_baud_rate = new wxStaticText(this, -1, "Baud Rate:");
+    m_ch_baud_rate = new wxChoice(this, ID_BAUD_RATE_CHOICE);
+    const wxString baudChoices[] = { "9600", "19200", "38400", "57600", "115200" };
+    for (const auto& baud : baudChoices) {
+        m_ch_baud_rate->Append(baud);
+    }
+    com_grid->Add(m_lbl_baud_rate, 0, wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL | wxRIGHT, h_text_margin);
+    com_grid->Add(m_ch_baud_rate, 1, wxGROW | wxALIGN_CENTER_VERTICAL);
+    
+    // Flow control
+    m_cb_flow_control = new wxCheckBox(this, ID_FLOW_CONTROL_CHK, "Hardware Flow Control");
+    com_grid->Add(new wxStaticText(this, -1, ""), 0);
+    com_grid->Add(m_cb_flow_control, 1, wxALIGN_CENTER_VERTICAL);
+    
+    com_port_sizer->Add(com_grid, 1, wxEXPAND | wxALL, 5);
+
     // and we get a box sizer to group all things on the left
     wxBoxSizer *leftgroup = new wxBoxSizer(wxVERTICAL);
     leftgroup->Add(left_grid);
     leftgroup->Add(m_warn_io, 0, wxTOP, 15);
+    leftgroup->Add(com_port_sizer, 0, wxTOP | wxEXPAND, 15);
 
     // the grid on the right contains Slot related configuration
     wxFlexGridSizer *right_grid = new wxFlexGridSizer(1+NUM_IOSLOTS, 4, fgs_vgap, fgs_hgap);
@@ -206,6 +242,11 @@ SystemConfigDlg::SystemConfigDlg(wxFrame *parent) :
     Bind(wxEVT_CHECKBOX, &SystemConfigDlg::OnWarnIo,        this, ID_CHK_WARN_IO);
     Bind(wxEVT_BUTTON,   &SystemConfigDlg::OnButton,        this, -1);
 
+    // COM port event bindings for 2236WD terminal mode
+    Bind(wxEVT_TEXT,     &SystemConfigDlg::OnComPortChange, this, ID_COM_PORT_TEXT);
+    Bind(wxEVT_CHOICE,   &SystemConfigDlg::OnBaudRateChange, this, ID_BAUD_RATE_CHOICE);
+    Bind(wxEVT_CHECKBOX, &SystemConfigDlg::OnFlowControlChange, this, ID_FLOW_CONTROL_CHK);
+
     Bind(wxEVT_COMMAND_CHOICE_SELECTED, &SystemConfigDlg::OnCardChoice, this,
          ID_SLOT0_CARD_CHOICE, ID_SLOTN_CARD_CHOICE);
     Bind(wxEVT_COMMAND_CHOICE_SELECTED, &SystemConfigDlg::OnAddrChoice, this,
@@ -261,6 +302,32 @@ SystemConfigDlg::updateDlg()
     }
 
     m_warn_io->SetValue(m_cfg.getWarnIo());
+
+    // Update COM port controls visibility and values for 2236WD terminal mode
+    const bool is_terminal_mode = (cpu_type == Cpu2200::CPUTYPE_2236WD);
+    m_sb_com_port->Show(is_terminal_mode);
+    m_lbl_com_port->Show(is_terminal_mode);
+    m_tc_com_port->Show(is_terminal_mode);
+    m_lbl_baud_rate->Show(is_terminal_mode);
+    m_ch_baud_rate->Show(is_terminal_mode);
+    m_cb_flow_control->Show(is_terminal_mode);
+    
+    if (is_terminal_mode) {
+        // Populate COM port settings
+        m_tc_com_port->SetValue(m_cfg.getComPortName());
+        
+        // Set baud rate
+        const int baud_rate = m_cfg.getComBaudRate();
+        wxString baud_str = wxString::Format("%d", baud_rate);
+        int baud_selection = m_ch_baud_rate->FindString(baud_str);
+        if (baud_selection != wxNOT_FOUND) {
+            m_ch_baud_rate->SetSelection(baud_selection);
+        } else {
+            m_ch_baud_rate->SetSelection(1); // Default to 19200
+        }
+        
+        m_cb_flow_control->SetValue(m_cfg.getComFlowControl());
+    }
 
     for (int slot=0; slot < NUM_IOSLOTS; slot++) {
         const IoCard::card_t card_type = m_cfg.getSlotCardType(slot);
@@ -342,6 +409,35 @@ SystemConfigDlg::OnCpuChoice(wxCommandEvent& WXUNUSED(event))
         }
         i++;
     }
+
+    // Update COM port controls visibility for 2236WD terminal mode
+    const bool is_terminal_mode = (cpu_type == Cpu2200::CPUTYPE_2236WD);
+    m_sb_com_port->Show(is_terminal_mode);
+    m_lbl_com_port->Show(is_terminal_mode);
+    m_tc_com_port->Show(is_terminal_mode);
+    m_lbl_baud_rate->Show(is_terminal_mode);
+    m_ch_baud_rate->Show(is_terminal_mode);
+    m_cb_flow_control->Show(is_terminal_mode);
+    
+    if (is_terminal_mode) {
+        // Populate COM port settings when switching to terminal mode
+        m_tc_com_port->SetValue(m_cfg.getComPortName());
+        
+        // Set baud rate
+        const int baud_rate = m_cfg.getComBaudRate();
+        wxString baud_str = wxString::Format("%d", baud_rate);
+        int baud_selection = m_ch_baud_rate->FindString(baud_str);
+        if (baud_selection != wxNOT_FOUND) {
+            m_ch_baud_rate->SetSelection(baud_selection);
+        } else {
+            m_ch_baud_rate->SetSelection(1); // Default to 19200
+        }
+        
+        m_cb_flow_control->SetValue(m_cfg.getComFlowControl());
+    }
+    
+    // Refresh layout to accommodate visibility changes
+    Layout();
 
     updateButtons();
 }
@@ -547,6 +643,41 @@ SystemConfigDlg::setValidIoChoices(int slot, int card_type_idx)
     // hide the configuration button if there is nothing to configure
     const bool show_btn = occupied && CardInfo::isCardConfigurable(ct);
     hCfgCtl->Show(show_btn);
+}
+
+
+// ----------------------------------------------------------------------------
+// 2236WD terminal COM port event handlers  
+// ----------------------------------------------------------------------------
+
+void
+SystemConfigDlg::OnComPortChange(wxCommandEvent& WXUNUSED(event))
+{
+    m_cfg.setComPortName(m_tc_com_port->GetValue().ToStdString());
+    updateButtons();
+}
+
+
+void
+SystemConfigDlg::OnBaudRateChange(wxCommandEvent& WXUNUSED(event))
+{
+    const int selection = m_ch_baud_rate->GetSelection();
+    if (selection != wxNOT_FOUND) {
+        const wxString baud_str = m_ch_baud_rate->GetString(selection);
+        long baud_rate;
+        if (baud_str.ToLong(&baud_rate)) {
+            m_cfg.setComBaudRate(static_cast<int>(baud_rate));
+        }
+    }
+    updateButtons();
+}
+
+
+void
+SystemConfigDlg::OnFlowControlChange(wxCommandEvent& WXUNUSED(event))
+{
+    m_cfg.setComFlowControl(m_cb_flow_control->GetValue());
+    updateButtons();
 }
 
 // vim: ts=8:et:sw=4:smarttab

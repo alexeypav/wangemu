@@ -70,6 +70,16 @@ public:
     void setWarnIo(bool warn) noexcept;
     bool getWarnIo() const noexcept;
 
+    // set/get COM port settings for 2236WD terminal mode
+    void setComPortName(const std::string &name) noexcept;
+    std::string getComPortName() const noexcept;
+    void setComBaudRate(int rate) noexcept;
+    int getComBaudRate() const noexcept;
+    void setComFlowControl(bool flow_control) noexcept;
+    bool getComFlowControl() const noexcept;
+    void setComSwFlowControl(bool sw_flow_control) noexcept;
+    bool getComSwFlowControl() const noexcept;
+
     // retrieve the pointer to the per-card configuration state
     std::shared_ptr<CardCfgState> getCardConfig(int slot) const noexcept;
 
@@ -107,6 +117,12 @@ private:
     bool m_speed_regulated = true;  // emulation speed throttling
     bool m_disk_realtime   = true;  // boolean whether disk emulation is realtime or not
     bool m_warn_io         = true;  // boolean whether to warn on access to invalid IO device
+    
+    // -------------- 2236WD terminal COM port settings --------------
+    std::string m_com_port_name = "COM1";  // COM port for 2236WD terminal mode  
+    int         m_com_baud_rate = 19200;   // Baud rate for COM port
+    bool        m_com_flow_control = false; // Hardware flow control (RTS/CTS) - not used for Wang terminals  
+    bool        m_com_sw_flow_control = true;  // Software flow control (XON/XOFF) - recommended for Wang terminals
 };
 
 #endif // _INCLUDE_SYS_CONFIG_STATE_H_

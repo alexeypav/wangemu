@@ -47,8 +47,8 @@ class Scheduler
     friend class Timer;  // so timer can see killTimer()
 
 public:
-     Scheduler();
-
+    Scheduler();
+    bool hasPendingTimers() const noexcept { return !m_timer.empty(); }
     // create a new timer
     // ticks is the number of clock ticks before the callback fires,
     // passing back the stored arg. e.g.,

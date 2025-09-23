@@ -816,6 +816,7 @@ CrtFrame::getDefaults()
             case 0x40: default_kb_addr = 0x41; break;
             case 0x80: default_kb_addr = 0x81; break;
             case 0xC0: default_kb_addr = 0xC1; break;
+            case 8192: default_kb_addr = 0x01; break; // --- m_crt_addr for the terminal mode passes the RAM ammount for some reason this is incorrect
             default: assert(false);
         }
     }

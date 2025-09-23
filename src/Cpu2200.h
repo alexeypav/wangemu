@@ -17,7 +17,7 @@ public:
 
     // report which type of CPU is in use
     enum { CPUTYPE_2200B, CPUTYPE_2200T,
-           CPUTYPE_VP, CPUTYPE_MVP, CPUTYPE_MVPC, CPUTYPE_MICROVP };
+           CPUTYPE_VP, CPUTYPE_MVP, CPUTYPE_MVPC, CPUTYPE_MICROVP, CPUTYPE_2236WD };
     virtual int getCpuType() const noexcept = 0;
 
     // true=hard reset, false=soft reset

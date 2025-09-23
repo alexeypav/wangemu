@@ -11,6 +11,10 @@
 #include "host.h"
 #include "system2200.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include <sstream>
 
 // ------------------------------------------------------------------------
@@ -64,6 +68,12 @@ SysCfgState::operator=(const SysCfgState &rhs)
     regulateCpuSpeed(rhs.isCpuSpeedRegulated());
     setDiskRealtime(rhs.getDiskRealtime());
     setWarnIo(rhs.getWarnIo());
+    
+    // Copy COM terminal settings for 2236WD terminal mode
+    setComPortName(rhs.getComPortName());
+    setComBaudRate(rhs.getComBaudRate());
+    setComFlowControl(rhs.getComFlowControl());
+    setComSwFlowControl(rhs.getComSwFlowControl());
 
     return *this;
 }
@@ -90,6 +100,12 @@ SysCfgState::SysCfgState(const SysCfgState &obj)
     m_speed_regulated = obj.m_speed_regulated;
     m_disk_realtime   = obj.m_disk_realtime;
     m_warn_io         = obj.m_warn_io;
+    
+    // Copy COM terminal settings for 2236WD terminal mode
+    m_com_port_name    = obj.m_com_port_name;
+    m_com_baud_rate    = obj.m_com_baud_rate;
+    m_com_flow_control = obj.m_com_flow_control;
+    
     m_initialized     = true;
 }
 
@@ -144,6 +160,12 @@ SysCfgState::setDefaults()
     setRamKB(32);
     setDiskRealtime(true);
     setWarnIo(true);
+    
+    // Set COM port defaults for 2236WD terminal mode
+    setComPortName("COM6");
+    setComBaudRate(19200);
+    setComFlowControl(false);    // Default to software flow control for Wang terminals
+    setComSwFlowControl(true);
 
     // wipe out all cards
     for (int slot=0; slot < NUM_IOSLOTS; slot++) {
@@ -261,6 +283,39 @@ SysCfgState::loadIni()
         setWarnIo(bval);  // default
     }
 
+    // load COM port settings for 2236WD terminal mode
+    {
+        const std::string subgroup("com_terminal");
+        std::string sval;
+        int ival;
+        bool bval;
+
+        std::string defaultPort = "COM5";
+        bool port_found = host::configReadStr(subgroup, "port_name", &sval, &defaultPort);
+        setComPortName(sval);
+        
+        // Debug logging to track configuration loading
+        char debug_msg[256];
+        sprintf(debug_msg, "DEBUG: COM terminal config - port_name found: %s, value: %s\n", 
+                port_found ? "YES" : "NO", sval.c_str());
+        OutputDebugStringA(debug_msg);
+
+        host::configReadInt(subgroup, "baud_rate", &ival, 19200);
+        setComBaudRate(ival);
+        sprintf(debug_msg, "DEBUG: COM terminal config - baud_rate: %d\n", ival);
+        OutputDebugStringA(debug_msg);
+
+        host::configReadBool(subgroup, "flow_control", &bval, false);
+        setComFlowControl(bval);
+        sprintf(debug_msg, "DEBUG: COM terminal config - flow_control: %s\n", bval ? "true" : "false");
+        OutputDebugStringA(debug_msg);
+        
+        host::configReadBool(subgroup, "sw_flow_control", &bval, true);
+        setComSwFlowControl(bval);
+        sprintf(debug_msg, "DEBUG: COM terminal config - sw_flow_control: %s\n", bval ? "true" : "false");
+        OutputDebugStringA(debug_msg);
+    }
+
     m_initialized = true;
 }
 
@@ -314,6 +369,15 @@ SysCfgState::saveIni() const
         const std::string subgroup("misc");
         host::configWriteBool(subgroup, "disk_realtime", getDiskRealtime());
         host::configWriteBool(subgroup, "warnio",        getWarnIo());
+    }
+
+    // save COM port settings for 2236WD terminal mode
+    {
+        const std::string subgroup("com_terminal");
+        host::configWriteStr(subgroup, "port_name",     getComPortName());
+        host::configWriteInt(subgroup, "baud_rate",     getComBaudRate());
+        host::configWriteBool(subgroup, "flow_control", getComFlowControl());
+        host::configWriteBool(subgroup, "sw_flow_control", getComSwFlowControl());
     }
 }
 
@@ -415,6 +479,60 @@ bool
 SysCfgState::getWarnIo() const noexcept
 {
     return m_warn_io;
+}
+
+
+void
+SysCfgState::setComPortName(const std::string &name) noexcept
+{
+    m_com_port_name = name;
+}
+
+
+std::string
+SysCfgState::getComPortName() const noexcept
+{
+    return m_com_port_name;
+}
+
+
+void
+SysCfgState::setComBaudRate(int rate) noexcept
+{
+    m_com_baud_rate = rate;
+}
+
+
+int
+SysCfgState::getComBaudRate() const noexcept
+{
+    return m_com_baud_rate;
+}
+
+
+void
+SysCfgState::setComFlowControl(bool flow_control) noexcept
+{
+    m_com_flow_control = flow_control;
+}
+
+
+bool
+SysCfgState::getComFlowControl() const noexcept
+{
+    return m_com_flow_control;
+}
+
+void
+SysCfgState::setComSwFlowControl(bool sw_flow_control) noexcept
+{
+    m_com_sw_flow_control = sw_flow_control;
+}
+
+bool
+SysCfgState::getComSwFlowControl() const noexcept
+{
+    return m_com_sw_flow_control;
 }
 
 

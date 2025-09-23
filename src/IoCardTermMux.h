@@ -5,11 +5,14 @@
 
 #include "IoCard.h"
 #include "TermMuxCfgState.h"
+#include <memory>
+#include <deque>
 
 class Cpu2200;
 class Scheduler;
 class Timer;
 class Terminal;
+class SerialPort;
 
 class IoCardTermMux : public IoCard
 {
@@ -67,6 +70,16 @@ private:
 
     void checkTxBuffer(int term_num);
     void mxdToTermCallback(int term_num, int byte);
+    
+    // Handle bytes received from serial port
+    void serialToMxdRx(int term_num, uint8 byte);
+    
+    // RX FIFO management
+    void serialRxByte(int term_num, uint8_t byte);
+    void queueRxByte(int term_num, uint8_t byte);
+    
+    // FIFO capacity
+    static constexpr size_t RX_FIFO_MAX = 64;
 
     // ---- board state ----
     TermMuxCfgState            m_cfg;       // current configuration
@@ -94,9 +107,13 @@ private:
     struct m_term_t {
         // display related:
         std::unique_ptr<Terminal> terminal; // terminal model
-        // uart receive state
+        std::shared_ptr<SerialPort> serial_port; // COM port (if used)
+        // uart receive state (legacy single-byte latch - kept for compatibility)
         bool                   rx_ready;    // received a byte
         int                    rx_byte;     // value of received byte
+        // RX FIFO (new implementation)
+        std::deque<uint8_t>    rx_fifo;     // RX FIFO for reliable multi-byte sequences
+        uint32_t               rx_overrun_drops = 0; // statistics for debugging
         // uart transmit state
         bool                   tx_ready;    // room to accept a byte (1 deep FIFO)
         int                    tx_byte;     // value of tx byte

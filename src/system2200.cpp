@@ -6,14 +6,17 @@
 #include "IoCardKeyboard.h"  // for KEYCODE_HALT
 #include "Scheduler.h"
 #include "ScriptFile.h"
+#include "SerialPort.h"
 #include "SysCfgState.h"
+#include "Terminal.h"
 #include "Ui.h"
 #include "host.h"
 #include "system2200.h"
 
 #include <algorithm>
 #include <sstream>
-
+#undef min
+#undef max
 // ----------------------------------------------------------------------------
 // this is the "private" state of the system2200 namespace,
 // invisible to anyone importing system2200.h
@@ -24,6 +27,10 @@ static std::shared_ptr<Scheduler> scheduler = nullptr;
 
 // the central processing unit
 static std::shared_ptr<Cpu2200> cpu = nullptr;
+
+// terminal mode components (used when running as 2236WD terminal)
+static std::shared_ptr<SerialPort> terminal_serial_port = nullptr;
+static std::shared_ptr<Terminal> terminal = nullptr;
 
 // active system configuration
 static std::shared_ptr<SysCfgState> current_cfg = nullptr;
@@ -197,10 +204,113 @@ restoreDiskMounts()
 }
 
 
+// create terminal mode (2236WD) with serial port communication
+static void
+createTerminalMode()
+{
+    // Clean up any existing terminal mode resources first
+    if (terminal) {
+        if (terminal_serial_port) {
+            terminal_serial_port->detachTerminal();
+        }
+        terminal = nullptr;
+    }
+    if (terminal_serial_port) {
+        terminal_serial_port->close();
+        terminal_serial_port = nullptr;
+    }
+
+    // Create serial port for COM communication
+    terminal_serial_port = std::make_shared<SerialPort>(scheduler);
+    
+    // Configure serial port with settings from configuration
+    SerialConfig config;
+    config.portName = current_cfg->getComPortName();
+    config.baudRate = current_cfg->getComBaudRate();
+    config.dataBits = 8;
+    config.parity = ODDPARITY;       // Wang 2200 uses odd parity
+    config.stopBits = ONESTOPBIT;
+    // Hardware flow control (RTS/CTS) is disabled for Wang terminals since they don't support it
+    config.hwFlowControl = false;
+    config.swFlowControl = current_cfg->getComSwFlowControl();
+    
+    char debug_msg[256];
+    sprintf(debug_msg, "DEBUG: Terminal config - trying configured port: %s at %d baud\n", 
+            config.portName.c_str(), config.baudRate);
+    OutputDebugStringA(debug_msg);
+    
+    // Try to open the serial port
+    if (!terminal_serial_port->open(config)) {
+        sprintf(debug_msg, "DEBUG: Configured port %s failed, trying fallback ports\n", config.portName.c_str());
+        OutputDebugStringA(debug_msg);
+        
+        // Remember the user's configured port
+        std::string original_port = config.portName;
+        
+        // If configured port fails, try other common ports
+        const char* fallback_ports[] = {"COM2", "COM3", "COM4", "COM5", "COM6", nullptr};
+        bool opened = false;
+        
+        for (int i = 0; fallback_ports[i] && !opened; i++) {
+            // Skip if this is the same as the configured port (already tried)
+            if (fallback_ports[i] == original_port) {
+                continue;
+            }
+            
+            config.portName = fallback_ports[i];
+            opened = terminal_serial_port->open(config);
+            
+            if (opened) {
+                sprintf(debug_msg, "DEBUG: Fallback port %s opened successfully\n", config.portName.c_str());
+                OutputDebugStringA(debug_msg);
+                
+                // Update ONLY the port name in configuration, preserve baud rate and flow control
+                current_cfg->setComPortName(config.portName);
+                
+                sprintf(debug_msg, "DEBUG: Updated config to use working port %s, keeping baud rate %d\n", 
+                        config.portName.c_str(), config.baudRate);
+                OutputDebugStringA(debug_msg);
+            }
+        }
+        
+        if (!opened) {
+            // Show error but continue - user can configure port later
+            UI_error("Failed to open any COM port for 2236WD terminal mode.\n"
+                     "Please check COM port configuration and ensure a port is available.");
+            // Continue without serial port - terminal will work in display-only mode
+        }
+    } else {
+        sprintf(debug_msg, "DEBUG: Configured port %s opened successfully\n", config.portName.c_str());
+        OutputDebugStringA(debug_msg);
+    }
+    
+    // Create Wang 2236DE terminal with serial port using the COM port constructor
+    // Use high address space to avoid conflicts with normal emulation
+    terminal = std::make_shared<Terminal>(scheduler, terminal_serial_port, 0x2000, 0, UI_SCREEN_2236DE);
+    
+    // Connect serial port to terminal if we have one
+    if (terminal_serial_port && terminal_serial_port->isOpen()) {
+        terminal_serial_port->attachTerminal(terminal);
+    }
+}
+
+
 // break down any resources currently committed
 static void
 breakDownCards() noexcept
 {
+    // clean up terminal mode components if they exist
+    if (terminal) {
+        if (terminal_serial_port) {
+            terminal_serial_port->detachTerminal();
+        }
+        terminal = nullptr;
+    }
+    if (terminal_serial_port) {
+        terminal_serial_port->close();
+        terminal_serial_port = nullptr;
+    }
+
     // destroy card instances
     for (auto &card : card_in_slot) {
         card = nullptr;
@@ -337,16 +447,37 @@ system2200::setConfig(const SysCfgState &new_cfg)
         const bool rebuild_required = current_cfg->needsReboot(new_cfg);
         if (!rebuild_required) {
             *current_cfg = new_cfg;  // make new config permanent
-            // notify all configured cards about possible new configuration
-            for (int slot=0; slot < NUM_IOSLOTS; slot++) {
-                if (current_cfg->isSlotOccupied(slot)) {
-                    const IoCard::card_t ct = current_cfg->getSlotCardType(slot);
-                    if (CardInfo::isCardConfigurable(ct)) {
-                        auto cfg = current_cfg->getCardConfig(slot);
-                        auto card = getInstFromSlot(slot);
-                        card->setConfiguration(*cfg);
+            
+            // In 2236WD terminal mode, there are no cards to configure, so skip card updates
+            const int cpu_type = current_cfg->getCpuType();
+            if (cpu_type != Cpu2200::CPUTYPE_2236WD) {
+                // notify all configured cards about possible new configuration
+                for (int slot=0; slot < NUM_IOSLOTS; slot++) {
+                    if (current_cfg->isSlotOccupied(slot)) {
+                        const IoCard::card_t ct = current_cfg->getSlotCardType(slot);
+                        if (CardInfo::isCardConfigurable(ct)) {
+                            auto cfg = current_cfg->getCardConfig(slot);
+                            auto card = getInstFromSlot(slot);
+                            card->setConfiguration(*cfg);
+                        }
                     }
                 }
+            } else {
+                // For 2236WD terminal mode, we need to recreate the terminal with new COM port settings
+                // First clean up existing terminal
+                if (terminal) {
+                    if (terminal_serial_port) {
+                        terminal_serial_port->detachTerminal();
+                    }
+                    terminal = nullptr;
+                }
+                if (terminal_serial_port) {
+                    terminal_serial_port->close();
+                    terminal_serial_port = nullptr;
+                }
+                
+                // Recreate terminal with new COM port settings
+                createTerminalMode();
             }
             return;
         }
@@ -363,6 +494,12 @@ system2200::setConfig(const SysCfgState &new_cfg)
 
     // save the new system configuration state
     *current_cfg = new_cfg;
+    
+    // Debug: Check if configuration was copied correctly
+    char debug_msg[256];
+    sprintf(debug_msg, "DEBUG: After config copy - port: %s, baud: %d\n", 
+            current_cfg->getComPortName().c_str(), current_cfg->getComBaudRate());
+    OutputDebugStringA(debug_msg);
 
     // (re)build the CPU
     const int ram_size = (current_cfg->getRamKB()) * 1024;
@@ -381,6 +518,10 @@ system2200::setConfig(const SysCfgState &new_cfg)
         case Cpu2200::CPUTYPE_MICROVP:
             cpu = std::make_shared<Cpu2200vp>(scheduler, ram_size, cpu_type);
             break;
+        case Cpu2200::CPUTYPE_2236WD:
+            // Terminal mode - no CPU needed, just create terminal with serial port
+            createTerminalMode();
+            return; // Exit early, no need to build cards
     }
     assert(cpu);
 
@@ -455,6 +596,14 @@ system2200::reset(bool cold_reset)
 {
     curIoAddr = -1;
 
+    // In terminal mode (2236WD), reset the terminal instead of CPU
+    if (!cpu) {
+        if (terminal) {
+            terminal->reset(cold_reset);
+        }
+        return;
+    }
+
     cpu->reset(cold_reset);
 
     // reset all I/O devices
@@ -527,17 +676,69 @@ system2200::onIdle()
     // on emulator performance.
     static const int slice_duration = 30;   // in ms
 
-    switch (getTerminationState()) {
-        case RUNNING:
-            // this is the normal case during emulation
-            if (m_freeze_emu) {
-                // if we don't call sleep, we just get another onIdle event
-                // and end up pegging the host CPU
-                host::sleep(10);
-            } else {
-                emulateTimeslice(slice_duration);
+
+switch (getTerminationState()) {
+case RUNNING: {
+    if (m_freeze_emu) {
+        host::sleep(10);
+    }
+    else {
+        // Terminal CPU (2236WD): no CPU, but we need timers.
+        if (!cpu) {
+            static bool   s_term_tick_ready = false;
+            static bool   s_term_tick_disabled = false;
+            static uint64 s_stable_since_ms = 0;
+
+            if (!s_term_tick_disabled) {
+                const bool have_sched = (scheduler != nullptr);
+                const bool have_term = (terminal != nullptr);
+                const bool have_port = (terminal_serial_port != nullptr)
+                    && terminal_serial_port->isOpen();
+                const bool ready_now = have_sched && have_term && have_port;
+
+                const uint64 now_ms = host::getTimeMs();
+
+                if (ready_now) {
+                    if (s_stable_since_ms == 0) s_stable_since_ms = now_ms;
+                    // wait a bit after open to avoid early-race callbacks
+                    if (!s_term_tick_ready && (now_ms - s_stable_since_ms) >= 600) {
+                        s_term_tick_ready = true;
+                    }
+                }
+                else {
+                    s_stable_since_ms = 0;
+                    s_term_tick_ready = false;
+                }
+
+                if (s_term_tick_ready
+                    && scheduler->hasPendingTimers()) {
+                    try {
+                        const uint32 ns = static_cast<uint32>(slice_duration) * 1000000u;
+                        scheduler->timerTick(ns);
+                    }
+                    catch (const std::exception& e) {
+                        s_term_tick_disabled = true;
+                        dbglog("Terminal-mode timerTick exception: %s", e.what());
+                    }
+                    catch (...) {
+                        s_term_tick_disabled = true;
+                        dbglog("Terminal-mode timerTick unknown exception");
+                    }
+                }
             }
-            return true;        // want more idle events
+
+            host::sleep(0);
+        }
+        else {
+            // normal emulation path
+            emulateTimeslice(slice_duration);
+        }
+    }
+    return true;
+}
+
+
+        
         case TERMINATING:
             // we've been signaled to shut down the universe.
             // change the flag to know we've already cleaned up, in case
@@ -561,6 +762,11 @@ system2200::onIdle()
 void
 system2200::emulateTimeslice(int ts_ms)
 {
+    // In terminal mode (2236WD), there's no CPU to emulate
+    if (!cpu) {
+        return;
+    }
+
     const int num_devices = m_clocked_devices.size();
 
     // try to stae reatime within this window
@@ -626,58 +832,58 @@ system2200::emulateTimeslice(int ts_ms)
             }
 
         } else if (num_devices == 2) {
-            // this is an important case of #0 being cpu, and #1 being
-            // the 8080 in the MXD.  the cpu is faster than the 8080,
-            // so let it run a few cycles between reevaluations of which
-            // device is ahead in time.
+           // this is an important case of #0 being cpu, and #1 being
+           // the 8080 in the MXD.  the cpu is faster than the 8080,
+           // so let it run a few cycles between reevaluations of which
+           // device is ahead in time.
 
-            // at the start of a timeslice, shift time for all cards towards
-            // zero to prevent overflowing the 32b nanosecond counters
-            const uint32 rebase = std::min(m_clocked_devices[0].ns,
-                                           m_clocked_devices[1].ns);
-            m_clocked_devices[0].ns -= rebase;
-            m_clocked_devices[1].ns -= rebase;
+           // at the start of a timeslice, shift time for all cards towards
+           // zero to prevent overflowing the 32b nanosecond counters
+           const uint32 rebase = std::min(m_clocked_devices[0].ns,
+                                          m_clocked_devices[1].ns);
+           m_clocked_devices[0].ns -= rebase;
+           m_clocked_devices[1].ns -= rebase;
 
-            // we try to keep the devices in time lockstep as much as we can.
-            // each device has a nanosecond counter. the list of devices is
-            // kept in sorted order of increasing time. we call entry 0, adjust
-            // its time, then move it to the right place in the list.
-            while (slice_ns > 0) {
-                const bool run_vp = (   m_clocked_devices[0].ns
-                                     <= m_clocked_devices[1].ns);
-                int op_ns_signed = 0;
-                uint32 op_ns = 0;
-                if (run_vp) {
-                    // the 2200vp executes about six instructions in the time
-                    // the 8080 does one typical instruction
-                    auto cb = m_clocked_devices[0].callback_fn;
-                    op_ns_signed  = cb();
-                    op_ns_signed += cb();
-                    op_ns_signed += cb();
-                    op_ns_signed += cb();
-                    op_ns_signed += cb();
-                    op_ns_signed += cb();
-                    op_ns = static_cast<uint32>(op_ns_signed);
-                    m_clocked_devices[0].ns += op_ns;
-                } else {
-                    auto cb = m_clocked_devices[1].callback_fn;
-                    op_ns_signed = cb();
-                    op_ns = static_cast<uint32>(op_ns_signed);
-                    m_clocked_devices[1].ns += op_ns;
-                }
+           // we try to keep the devices in time lockstep as much as we can.
+           // each device has a nanosecond counter. the list of devices is
+           // kept in sorted order of increasing time. we call entry 0, adjust
+           // its time, then move it to the right place in the list.
+           while (slice_ns > 0) {
+               const bool run_vp = (   m_clocked_devices[0].ns
+                                    <= m_clocked_devices[1].ns);
+               int op_ns_signed = 0;
+               uint32 op_ns = 0;
+               if (run_vp) {
+                   // the 2200vp executes about six instructions in the time
+                   // the 8080 does one typical instruction
+                   auto cb = m_clocked_devices[0].callback_fn;
+                   op_ns_signed  = cb();
+                   op_ns_signed += cb();
+                   op_ns_signed += cb();
+                   op_ns_signed += cb();
+                   op_ns_signed += cb();
+                   op_ns_signed += cb();
+                   op_ns = static_cast<uint32>(op_ns_signed);
+                   m_clocked_devices[0].ns += op_ns;
+               } else {
+                   auto cb = m_clocked_devices[1].callback_fn;
+                   op_ns_signed = cb();
+                   op_ns = static_cast<uint32>(op_ns_signed);
+                   m_clocked_devices[1].ns += op_ns;
+               }
 
-                if (op_ns > 50000) {
-                    // something went wrong; finish the timeslice
-                    slice_ns = 0;
-                } else {
-                    const uint32 clamp_ns =
-                        std::max(m_clocked_devices[1].ns, m_clocked_devices[0].ns)
-                      - std::min(m_clocked_devices[1].ns, m_clocked_devices[0].ns);
-                    const uint32 delta_ns = std::min(op_ns, clamp_ns);
-                    slice_ns -= delta_ns;
-                    scheduler->timerTick(delta_ns);
-                }
-            }
+               if (op_ns > 50000) {
+                   // something went wrong; finish the timeslice
+                   slice_ns = 0;
+               } else {
+                   const uint32 clamp_ns =
+                       std::max(m_clocked_devices[1].ns, m_clocked_devices[0].ns)
+                     - std::min(m_clocked_devices[1].ns, m_clocked_devices[0].ns);
+                   const uint32 delta_ns = std::min(op_ns, clamp_ns);
+                   slice_ns -= delta_ns;
+                   scheduler->timerTick(delta_ns);
+               }
+           }
 
         } else {
 
@@ -959,24 +1165,34 @@ system2200::unregisterKb(int io_addr, int term_num)
 void
 system2200::dispatchKeystroke(int io_addr, int term_num, int keyvalue)
 {
-    for (auto &kb : keyboard_routes) {
-        if (io_addr == kb.io_addr && term_num == kb.term_num) {
-            if (kb.script_handle) {
-                // a script is running; ignore everything but HALT
-                // (on pc, ctrl-C or pause/break key)
-                if (keyvalue == IoCardKeyboard::KEYCODE_HALT) {
-                    kb.script_handle = nullptr;
+    auto try_deliver = [&](int addr)->bool {
+        for (auto &kb : keyboard_routes) {
+            if (addr == kb.io_addr && term_num == kb.term_num) {
+                if (kb.script_handle) {
+                    if (keyvalue == IoCardKeyboard::KEYCODE_HALT) {
+                        kb.script_handle = nullptr;
+                    }
+                    return true; // swallow while script active
                 }
-                return;
+                auto cb = kb.callback_fn;
+                cb(keyvalue);
+                return true;
             }
-            auto cb = kb.callback_fn;
-            cb(keyvalue);
-            return;
         }
-    }
-    UI_warn("Attempt to route key to unknown kb handler at io_addr=0x%02x, term_num=%d",
+        return false;
+    };
+
+    // 1) try exact
+    if (try_deliver(io_addr)) return;
+
+    // 2) compatibility: some older configs used high addresses (e.g., 0x2001)
+    const int low8 = (io_addr & 0xFF);
+    if ((io_addr & ~0xFF) && try_deliver(low8)) return;
+
+    UI_warn("Attempt to route key to unknown kb handler at io_addr=0x%04x, term_num=%d",
             io_addr, term_num);
 }
+
 
 
 // request the contents of a file to be fed in as a keyboard stream
@@ -1276,6 +1492,14 @@ const std::vector<system2200::cpuconfig_t> system2200::m_cpu_configs = {
         { 128, 512, 1024, 2048, 4096, 8192 },  // .ram_size_options
         { 64 },                    // .ucode_size_options
         true                       // .has_oneshot
+    },
+
+    // Wang 2236WD Terminal Mode - COM port connection to external 2200 system
+    {   Cpu2200::CPUTYPE_2236WD,   // .cpu_type
+        "2236WD Terminal",         // .label
+        { 0 },                     // .ram_size_options - no RAM needed for terminal mode
+        { 0 },                     // .ucode_size_options - no ucode needed for terminal mode
+        false                      // .has_oneshot
     },
 };
 

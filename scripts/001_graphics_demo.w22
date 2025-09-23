@@ -1,0 +1,31 @@
+10 REM Graphics Demo for Wang BASIC-2 (no-scroll)
+20 PRINT HEX(03)
+30 PRINT AT(1,1);"Wang BASIC-2 Graphics Demo (no scroll)";
+40 FOR I=1 TO 64 : PRINT AT(2,I);"="; : NEXT I
+50 PRINT AT(3,1);"Sine Wave";
+60 PRINT AT(3,40);"Checker Pattern";
+
+70 REM ----- Sine wave (rows 5..14, cols ~4..35) -----
+80 P=3.14159265
+90 R=5
+100 FOR A=0 TO 162 STEP 18
+110 C=20+INT(15*SIN(A*P/180)+0.5)     : REM center ~col 23 of the left pane
+120 PRINT AT(R,3+C);"*";
+130 R=R+1
+140 NEXT A
+
+150 REM ----- Checker pattern (rows 5..14, cols 40..59) -----
+160 FOR R1=5 TO 14
+170   FOR C1=40 TO 59
+180     S=(R1-5)+(C1-40)
+190     E=S-2*INT(S/2)                : REM 0 even, 1 odd
+200     IF E=0 THEN 210
+205     PRINT AT(R1,C1);"#"; : GOTO 220
+210     PRINT AT(R1,C1);" ";
+220   NEXT C1
+230 NEXT R1
+
+240 FOR I=1 TO 64 : PRINT AT(15,I);"="; : NEXT I
+250 PRINT AT(16,1);"Graphics demo complete!  Press any key...";
+260 KEYIN K$
+270 END
