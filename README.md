@@ -1,3 +1,20 @@
+This is a modified version of wangemu - forked from https://github.com/jtbattle/wangemu
+
+Added support for:
+
+Serial communication over the host's com ports
+Using the emulator as a Wang terminal connected to a real Wang2200 system
+Connecting a Wang terminal via the host's com port to the emulator
+
+Tested with a Wang 2336DW Terminal and Wang MicroVP System
+
+This modifications are only currently supported on Windows (Serial comms), tested on Windows 10
+
+Updated build instructions at the bottom
+
+(Most of the extra code to support serial communication was done with Claude Code, so I can't comment on the quality, leaving this here as a disclaimer, however without LLM help this would have taken me so long it probably wouldn't have happened)
+
+
 Wang 2200 Emulator
 ==================
 
