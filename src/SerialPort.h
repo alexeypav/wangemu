@@ -22,18 +22,35 @@ class Timer;
 class Terminal;
 class Scheduler;
 
+// Platform-agnostic parity constants
+enum ParityType {
+    NOPARITY = 0,
+    ODDPARITY = 1,
+    EVENPARITY = 2
+};
+
+// Platform-agnostic stop bits constants  
+enum StopBitsType {
+    ONESTOPBIT = 0,
+    TWOSTOPBITS = 1
+};
+
 // Wang 2200 serial port settings commonly used
 struct SerialConfig {
-    std::string portName;        // e.g. "COM1", "COM2"
-    DWORD baudRate;             // 300, 1200, 2400, 4800, 9600, 19200
-    BYTE dataBits;              // 7 or 8
-    BYTE stopBits;              // ONESTOPBIT, TWOSTOPBITS  
-    BYTE parity;                // NOPARITY, ODDPARITY, EVENPARITY
+    std::string portName;        // e.g. "COM1", "/dev/ttyUSB0"
+    uint32_t baudRate;          // 300, 1200, 2400, 4800, 9600, 19200
+    uint8_t dataBits;           // 7 or 8
+    StopBitsType stopBits;      // ONESTOPBIT, TWOSTOPBITS  
+    ParityType parity;          // NOPARITY, ODDPARITY, EVENPARITY
     bool hwFlowControl;         // Hardware flow control (RTS/CTS) - not used for Wang terminals
     bool swFlowControl;         // Software flow control (XON/XOFF) - recommended for Wang terminals
     
     SerialConfig() :
+#ifdef _WIN32
         portName("COM5"),
+#else
+        portName("/dev/ttyUSB0"),
+#endif
         baudRate(19200),
         dataBits(8), 
         stopBits(ONESTOPBIT),
@@ -54,7 +71,7 @@ public:
     // Configuration
     bool open(const SerialConfig &config);
     void close();
-    bool isOpen() const { return m_handle != INVALID_HANDLE_VALUE; }
+    bool isOpen() const;
 
     // Terminal connection
     void attachTerminal(std::shared_ptr<Terminal> terminal);
@@ -67,6 +84,15 @@ public:
     // Receive callback for MXD integration
     using RxCallback = std::function<void(uint8)>;
     void setReceiveCallback(RxCallback cb);
+    
+    // Statistics
+    uint64_t getRxByteCount() const { return m_rxByteCount.load(); }
+    uint64_t getTxByteCount() const { return m_txByteCount.load(); }
+    void resetCounters() { m_rxByteCount.store(0); m_txByteCount.store(0); }
+    
+    // Capture hooks for debugging
+    using CaptureCallback = std::function<void(uint8, bool)>;  // byte, isRx
+    void setCaptureCallback(CaptureCallback cb) { m_captureCallback = std::move(cb); }
 
 private:
     // Internal communication methods
@@ -84,6 +110,9 @@ private:
     
     // MXD receive callback
     RxCallback m_rxCallback;
+    
+    // Capture callback for debugging
+    CaptureCallback m_captureCallback;
 
 #ifdef _WIN32
     HANDLE m_handle;
@@ -91,6 +120,9 @@ private:
     OVERLAPPED m_writeOverlapped;
     HANDLE m_readEvent;
     HANDLE m_writeEvent;
+#else
+    int m_fd;                   // POSIX file descriptor
+    int m_cancelPipe[2];        // pipe for thread cancellation
 #endif
 
     // Receiving thread
@@ -105,6 +137,10 @@ private:
 
     // Configuration
     SerialConfig m_config;
+    
+    // Statistics counters (thread-safe)
+    std::atomic<uint64_t> m_rxByteCount{0};
+    std::atomic<uint64_t> m_txByteCount{0};
 
     // Calculate transmission delay based on baud rate and settings
     int64 calculateTransmitDelay() const;

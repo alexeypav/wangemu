@@ -114,3 +114,5 @@ wvdutil/unscramble.py
 .vs/slnx.sqlite
 wangemu
 .vs/
+wangemu-headless
+obj_headless/*

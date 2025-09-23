@@ -1,3 +1,7 @@
+#ifdef HEADLESS_BUILD
+#error "IoCardPrinter should not be compiled in headless builds"
+#endif
+
 // Emulate a printer device.  Most of the work is done in the GUI side.
 
 #include "Cpu2200.h"

@@ -8,6 +8,7 @@
 #include "host.h"              // for dbglog()
 
 #include <fstream>
+#include <cstring>
 
 #ifdef _DEBUG
     #define DBG  (0)            // turn on some debug logging

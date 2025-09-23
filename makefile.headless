@@ -1,0 +1,113 @@
+# Headless makefile for wangemu terminal server
+# This builds wangemu without wxWidgets dependencies for use as a terminal server
+#
+# make targets:
+#
+# make -f makefile.headless         -- shorthand for "make -f makefile.headless debug"
+# make -f makefile.headless debug   -- non-optimized headless build
+# make -f makefile.headless opt     -- optimized headless build
+# make -f makefile.headless clean   -- remove all build products
+
+.PHONY: debug opt clean
+
+# Add .d to Make's recognized suffixes.
+.SUFFIXES: .c .cpp .d .o
+
+# don't create dependency files for these targets
+NODEPS := clean
+
+# Find all the source files in the src/ directory
+CPP_SOURCES := $(shell find src -name "*.cpp")
+C_SOURCES   := $(shell find src -name "*.c")
+H_SOURCES   := $(shell find src -name "*.h")
+
+# Exclude wxWidgets-dependent files for headless build
+EXCLUDE_FILES := src/UiSystem.cpp \
+                 src/UiCrtFrame.cpp \
+                 src/UiCrtConfigDlg.cpp \
+                 src/UiCrt_Keyboard.cpp \
+                 src/UiCrt_Keyboard_martin.cpp \
+                 src/UiCrtStatusBar.cpp \
+                 src/UiSystemConfigDlg.cpp \
+                 src/UiTermMuxCfgDlg.cpp \
+                 src/UiPrinterFrame.cpp \
+                 src/UiPrinterConfigDlg.cpp \
+                 src/UiPrinter.cpp \
+                 src/UiMyStaticText.cpp \
+                 src/UiMyAboutDlg.cpp \
+                 src/UiDiskCtrlCfgDlg.cpp \
+                 src/UiDiskFactory.cpp \
+                 src/UiControlFrame.cpp \
+                 src/UiCrt_Render.cpp \
+                 src/UiCrt_Charset.cpp \
+                 src/UiCrtErrorDlg.cpp \
+                 src/UiCrt.cpp \
+                 src/host.cpp \
+                 src/Terminal.cpp \
+                 src/IoCardDisplay.cpp \
+                 src/IoCardPrinter.cpp
+
+# Add headless-specific files
+HEADLESS_ONLY_FILES := src/UiHeadless.cpp src/main_headless.cpp src/host_headless.cpp src/TerminalServerConfig.cpp
+
+# Filter out excluded files
+FILTERED_CPP_SOURCES := $(filter-out $(EXCLUDE_FILES),$(CPP_SOURCES))
+# Add headless-only files (avoid duplicates)
+HEADLESS_CPP_SOURCES := $(FILTERED_CPP_SOURCES) $(filter-out $(FILTERED_CPP_SOURCES),$(HEADLESS_ONLY_FILES))
+
+# These are the dependency files, which make will clean up after it creates them
+DEPFILES := $(patsubst %.cpp,%.d,$(HEADLESS_CPP_SOURCES)) \
+            $(patsubst %.c,%.d,$(C_SOURCES))
+
+OBJFILES := $(patsubst src/%.cpp,obj_headless/%.o,$(HEADLESS_CPP_SOURCES)) \
+            $(patsubst src/%.c,obj_headless/%.o,$(C_SOURCES))
+
+# debug build
+debug: OPTFLAGS := -g -O0
+debug: wangemu-headless
+
+# optimized build
+opt: OPTFLAGS := -O2
+opt: wangemu-headless
+
+# Compiler settings for headless build (no wxWidgets)
+CXX         := g++
+CXXFLAGS    := -std=c++14 -fno-common -pthread -DHEADLESS_BUILD
+CXXWARNINGS := -Wall -Wextra -Wshadow -Wformat -Wundef -Wstrict-aliasing=1 \
+               -Wno-deprecated-declarations \
+               -Wno-ctor-dtor-privacy -Woverloaded-virtual
+LDFLAGS     := -pthread
+
+# don't create dependencies when we're cleaning, for instance
+ifeq (0, $(words $(findstring $(MAKECMDGOALS), $(NODEPS))))
+    -include $(DEPFILES)
+endif
+
+# ===== create the dependency files =====
+
+src/%.d: src/%.cpp
+	$(CXX) $(CXXFLAGS) -MM -MT '$(patsubst src/%.cpp,obj_headless/%.o,$<)' $< -MF $@
+
+src/%.d: src/%.c
+	$(CXX) $(CXXFLAGS) -MM -MT '$(patsubst src/%.c,obj_headless/%.o,$<)' $< -MF $@
+
+# ===== build the .o files =====
+
+obj_headless/%.o: src/%.cpp src/%.d
+	@mkdir -p $(dir $@)
+	$(CXX) $(OPTFLAGS) $(CXXFLAGS) $(CXXWARNINGS) -o $@ -c $<
+
+obj_headless/%.o: src/%.c src/%.d
+	@mkdir -p $(dir $@)
+	$(CXX) $(OPTFLAGS) $(CXXFLAGS) -o $@ -c $<
+
+# ==== link step ====
+
+wangemu-headless: $(OBJFILES)
+	$(CXX) $(LDFLAGS) $(OBJFILES) -o wangemu-headless
+
+# ===== clean build products =====
+
+clean:
+	rm -f src/*.d obj_headless/*.o wangemu-headless
+	rm -rf obj_headless/

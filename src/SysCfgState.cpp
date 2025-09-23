@@ -176,14 +176,22 @@ SysCfgState::setDefaults()
     setSlotCardType(0, IoCard::card_t::keyboard);
     setSlotCardAddr(0, 0x001);
 
+#ifndef HEADLESS_BUILD
     setSlotCardType(1, IoCard::card_t::disp_64x16);
     setSlotCardAddr(1, 0x005);
+#endif
 
     setSlotCardType(2, IoCard::card_t::disk);
     setSlotCardAddr(2, 0x310);
 
+#ifndef HEADLESS_BUILD
     setSlotCardType(3, IoCard::card_t::printer);
     setSlotCardAddr(3, 0x215);
+#else
+    // In headless mode, set up terminal mux instead of printer
+    setSlotCardType(3, IoCard::card_t::term_mux);
+    setSlotCardAddr(3, 0x46);  // Default MXD address
+#endif
 
     m_initialized = true;
 }
@@ -298,22 +306,42 @@ SysCfgState::loadIni()
         char debug_msg[256];
         sprintf(debug_msg, "DEBUG: COM terminal config - port_name found: %s, value: %s\n", 
                 port_found ? "YES" : "NO", sval.c_str());
+#ifdef _WIN32
+#ifdef _WIN32
         OutputDebugStringA(debug_msg);
+#else
+        fprintf(stderr, "%s", debug_msg);
+#endif
+#else
+        fprintf(stderr, "%s", debug_msg);
+#endif
 
         host::configReadInt(subgroup, "baud_rate", &ival, 19200);
         setComBaudRate(ival);
         sprintf(debug_msg, "DEBUG: COM terminal config - baud_rate: %d\n", ival);
+#ifdef _WIN32
         OutputDebugStringA(debug_msg);
+#else
+        fprintf(stderr, "%s", debug_msg);
+#endif
 
         host::configReadBool(subgroup, "flow_control", &bval, false);
         setComFlowControl(bval);
         sprintf(debug_msg, "DEBUG: COM terminal config - flow_control: %s\n", bval ? "true" : "false");
+#ifdef _WIN32
         OutputDebugStringA(debug_msg);
+#else
+        fprintf(stderr, "%s", debug_msg);
+#endif
         
         host::configReadBool(subgroup, "sw_flow_control", &bval, true);
         setComSwFlowControl(bval);
         sprintf(debug_msg, "DEBUG: COM terminal config - sw_flow_control: %s\n", bval ? "true" : "false");
+#ifdef _WIN32
         OutputDebugStringA(debug_msg);
+#else
+        fprintf(stderr, "%s", debug_msg);
+#endif
     }
 
     m_initialized = true;

@@ -11,8 +11,11 @@
 class Cpu2200;
 class Scheduler;
 class Timer;
+#ifndef HEADLESS_BUILD
 class Terminal;
+#endif
 class SerialPort;
+struct ITermSession;
 
 class IoCardTermMux : public IoCard
 {
@@ -41,6 +44,15 @@ public:
 
     // a keyboard event has happened
     void receiveKeystroke(int term_num, int keycode);
+    
+    // Session management for headless terminal server mode
+    void setSession(int term_num, std::shared_ptr<ITermSession> session);
+    
+    // Terminal → MXD data input (public for headless terminal server)
+    void serialRxByte(int term_num, uint8_t byte);
+    
+    // Get shared scheduler for terminal server components
+    std::shared_ptr<Scheduler> getScheduler() const { return m_scheduler; }
 
 private:
 
@@ -75,7 +87,6 @@ private:
     void serialToMxdRx(int term_num, uint8 byte);
     
     // RX FIFO management
-    void serialRxByte(int term_num, uint8_t byte);
     void queueRxByte(int term_num, uint8_t byte);
     
     // FIFO capacity
@@ -106,8 +117,11 @@ private:
     // ---- per terminal state ----
     struct m_term_t {
         // display related:
+#ifndef HEADLESS_BUILD
         std::unique_ptr<Terminal> terminal; // terminal model
+#endif
         std::shared_ptr<SerialPort> serial_port; // COM port (if used)
+        std::shared_ptr<ITermSession> session; // session abstraction (headless mode)
         // uart receive state (legacy single-byte latch - kept for compatibility)
         bool                   rx_ready;    // received a byte
         int                    rx_byte;     // value of received byte

@@ -38,6 +38,7 @@
 #include "host.h"         // for dbglog()
 
 #include <algorithm>      // for std::min, std::max
+#include <cstring>        // for memset
 
 #ifdef _DEBUG
     extern int iodisk_noisy;

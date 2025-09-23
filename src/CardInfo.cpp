@@ -7,7 +7,10 @@ CardInfo::getCardTypeFromName(const std::string &name)
 {
     for (auto &ct : IoCard::card_types) {
         std::unique_ptr<IoCard> tmp_card(IoCard::makeTmpCard(ct));
-        assert(tmp_card != nullptr);
+        // In headless mode, some card types return nullptr (e.g., display cards)
+        if (tmp_card == nullptr) {
+            continue;
+        }
         std::string this_name = tmp_card->getName();
         if (name == this_name) {
             return ct;

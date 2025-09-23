@@ -1,3 +1,7 @@
+#ifdef HEADLESS_BUILD
+#error "IoCardDisplay should not be compiled in headless builds"
+#endif
+
 // This code emulates the 64x16/80x24 display controller.
 //
 // If the realtime mode is enabled, the timing of the original display

@@ -15,6 +15,7 @@
 
 #include <cctype>
 #include <sstream>
+#include <cstring>
 
 // =========================================================================
 // Open a script file.

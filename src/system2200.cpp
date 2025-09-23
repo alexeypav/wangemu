@@ -6,9 +6,11 @@
 #include "IoCardKeyboard.h"  // for KEYCODE_HALT
 #include "Scheduler.h"
 #include "ScriptFile.h"
+#ifndef HEADLESS_BUILD
 #include "SerialPort.h"
-#include "SysCfgState.h"
 #include "Terminal.h"
+#endif
+#include "SysCfgState.h"
 #include "Ui.h"
 #include "host.h"
 #include "system2200.h"
@@ -29,8 +31,10 @@ static std::shared_ptr<Scheduler> scheduler = nullptr;
 static std::shared_ptr<Cpu2200> cpu = nullptr;
 
 // terminal mode components (used when running as 2236WD terminal)
+#ifndef HEADLESS_BUILD
 static std::shared_ptr<SerialPort> terminal_serial_port = nullptr;
 static std::shared_ptr<Terminal> terminal = nullptr;
+#endif
 
 // active system configuration
 static std::shared_ptr<SysCfgState> current_cfg = nullptr;
@@ -205,6 +209,7 @@ restoreDiskMounts()
 
 
 // create terminal mode (2236WD) with serial port communication
+#ifndef HEADLESS_BUILD
 static void
 createTerminalMode()
 {
@@ -237,12 +242,20 @@ createTerminalMode()
     char debug_msg[256];
     sprintf(debug_msg, "DEBUG: Terminal config - trying configured port: %s at %d baud\n", 
             config.portName.c_str(), config.baudRate);
+#ifdef _WIN32
     OutputDebugStringA(debug_msg);
+#else
+    fprintf(stderr, "%s", debug_msg);
+#endif
     
     // Try to open the serial port
     if (!terminal_serial_port->open(config)) {
         sprintf(debug_msg, "DEBUG: Configured port %s failed, trying fallback ports\n", config.portName.c_str());
-        OutputDebugStringA(debug_msg);
+    #ifdef _WIN32
+    OutputDebugStringA(debug_msg);
+#else
+    fprintf(stderr, "%s", debug_msg);
+#endif
         
         // Remember the user's configured port
         std::string original_port = config.portName;
@@ -262,14 +275,22 @@ createTerminalMode()
             
             if (opened) {
                 sprintf(debug_msg, "DEBUG: Fallback port %s opened successfully\n", config.portName.c_str());
-                OutputDebugStringA(debug_msg);
+            #ifdef _WIN32
+    OutputDebugStringA(debug_msg);
+#else
+    fprintf(stderr, "%s", debug_msg);
+#endif
                 
                 // Update ONLY the port name in configuration, preserve baud rate and flow control
                 current_cfg->setComPortName(config.portName);
                 
                 sprintf(debug_msg, "DEBUG: Updated config to use working port %s, keeping baud rate %d\n", 
                         config.portName.c_str(), config.baudRate);
-                OutputDebugStringA(debug_msg);
+            #ifdef _WIN32
+    OutputDebugStringA(debug_msg);
+#else
+    fprintf(stderr, "%s", debug_msg);
+#endif
             }
         }
         
@@ -281,7 +302,11 @@ createTerminalMode()
         }
     } else {
         sprintf(debug_msg, "DEBUG: Configured port %s opened successfully\n", config.portName.c_str());
-        OutputDebugStringA(debug_msg);
+    #ifdef _WIN32
+    OutputDebugStringA(debug_msg);
+#else
+    fprintf(stderr, "%s", debug_msg);
+#endif
     }
     
     // Create Wang 2236DE terminal with serial port using the COM port constructor
@@ -293,6 +318,7 @@ createTerminalMode()
         terminal_serial_port->attachTerminal(terminal);
     }
 }
+#endif // HEADLESS_BUILD
 
 
 // break down any resources currently committed
@@ -300,6 +326,7 @@ static void
 breakDownCards() noexcept
 {
     // clean up terminal mode components if they exist
+#ifndef HEADLESS_BUILD
     if (terminal) {
         if (terminal_serial_port) {
             terminal_serial_port->detachTerminal();
@@ -310,6 +337,7 @@ breakDownCards() noexcept
         terminal_serial_port->close();
         terminal_serial_port = nullptr;
     }
+#endif
 
     // destroy card instances
     for (auto &card : card_in_slot) {
@@ -464,6 +492,7 @@ system2200::setConfig(const SysCfgState &new_cfg)
                 }
             } else {
                 // For 2236WD terminal mode, we need to recreate the terminal with new COM port settings
+#ifndef HEADLESS_BUILD
                 // First clean up existing terminal
                 if (terminal) {
                     if (terminal_serial_port) {
@@ -478,6 +507,9 @@ system2200::setConfig(const SysCfgState &new_cfg)
                 
                 // Recreate terminal with new COM port settings
                 createTerminalMode();
+#else
+                UI_warn("Terminal mode configuration changes not supported in headless build");
+#endif
             }
             return;
         }
@@ -499,7 +531,11 @@ system2200::setConfig(const SysCfgState &new_cfg)
     char debug_msg[256];
     sprintf(debug_msg, "DEBUG: After config copy - port: %s, baud: %d\n", 
             current_cfg->getComPortName().c_str(), current_cfg->getComBaudRate());
+#ifdef _WIN32
     OutputDebugStringA(debug_msg);
+#else
+    fprintf(stderr, "%s", debug_msg);
+#endif
 
     // (re)build the CPU
     const int ram_size = (current_cfg->getRamKB()) * 1024;
@@ -520,8 +556,13 @@ system2200::setConfig(const SysCfgState &new_cfg)
             break;
         case Cpu2200::CPUTYPE_2236WD:
             // Terminal mode - no CPU needed, just create terminal with serial port
+#ifndef HEADLESS_BUILD
             createTerminalMode();
             return; // Exit early, no need to build cards
+#else
+            UI_warn("Terminal mode (2236WD) not supported in headless build");
+            return;
+#endif
     }
     assert(cpu);
 
@@ -598,9 +639,11 @@ system2200::reset(bool cold_reset)
 
     // In terminal mode (2236WD), reset the terminal instead of CPU
     if (!cpu) {
+#ifndef HEADLESS_BUILD
         if (terminal) {
             terminal->reset(cold_reset);
         }
+#endif
         return;
     }
 
@@ -684,6 +727,7 @@ case RUNNING: {
     }
     else {
         // Terminal CPU (2236WD): no CPU, but we need timers.
+#ifndef HEADLESS_BUILD
         if (!cpu) {
             static bool   s_term_tick_ready = false;
             static bool   s_term_tick_disabled = false;
@@ -729,7 +773,8 @@ case RUNNING: {
 
             host::sleep(0);
         }
-        else {
+#endif // HEADLESS_BUILD
+        if (cpu) {
             // normal emulation path
             emulateTimeslice(slice_duration);
         }

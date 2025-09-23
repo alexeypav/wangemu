@@ -15,8 +15,11 @@
 #include "IoCardTermMux.h"
 #include "Scheduler.h"
 #include "TermMuxCfgState.h"
+#ifndef HEADLESS_BUILD
 #include "Terminal.h"
+#endif
 #include "SerialPort.h"       // for COM port terminals
+#include "ITermSession.h"     // for session abstraction
 #include "Ui.h"
 #include "host.h"             // for dbglog()
 #include "i8080.h"
@@ -30,6 +33,10 @@ bool do_dbg = false;
 
 // the i8080 runs at 1.78 MHz
 const int NS_PER_TICK = 561;
+
+// Serial character transmission time (for terminals at 19200 baud)
+// 11 bits per character (start + 8 data + odd parity + stop) at 19200 bps
+static const int64 SERIAL_CHAR_DELAY = TIMER_US(11.0 * 1.0E6 / 19200.0);
 
 // mxd eprom image
 #include "IoCardTermMux_eprom.h"
@@ -96,8 +103,11 @@ IoCardTermMux::IoCardTermMux(std::shared_ptr<Scheduler> scheduler,
     assert(1 <= m_num_terms && m_num_terms <= 4);
 
     for (auto &t : m_terms) {
+#ifndef HEADLESS_BUILD
         t.terminal = nullptr;
+#endif
         t.serial_port.reset();
+        t.session.reset();
 
         t.rx_ready = false;
         t.rx_byte  = 0x00;
@@ -148,7 +158,9 @@ IoCardTermMux::IoCardTermMux(std::shared_ptr<Scheduler> scheduler,
             if (serial_port->open(serial_cfg)) {
                 // Store the serial port - NO GUI terminal for COM mode
                 m_terms[n].serial_port = serial_port;
+#ifndef HEADLESS_BUILD
                 m_terms[n].terminal.reset();  // No GUI terminal
+#endif
                 
                 // Set up RX callback so serial → MXD works (using new FIFO-based method)
                 serial_port->setReceiveCallback(
@@ -166,9 +178,14 @@ IoCardTermMux::IoCardTermMux(std::shared_ptr<Scheduler> scheduler,
         
         // Create standard GUI terminal (fallback or when no COM port configured)
         m_terms[n].serial_port.reset();  // Ensure no serial port
+#ifndef HEADLESS_BUILD
         m_terms[n].terminal = std::make_unique<Terminal>(
             scheduler, this, io_addr, n, UI_SCREEN_2236DE, vp_mode
         );
+#else
+        // In headless mode, terminals are managed via sessions
+        dbglog("IoCardTermMux: Terminal %d available for session connection in headless mode\n", n);
+#endif
     }
 }
 
@@ -187,7 +204,10 @@ IoCardTermMux::~IoCardTermMux()
                 t.serial_port->close();
                 t.serial_port.reset();
             }
+#ifndef HEADLESS_BUILD
             t.terminal = nullptr;
+#endif
+            t.session.reset();
         }
     }
 }
@@ -454,7 +474,7 @@ IoCardTermMux::checkTxBuffer(int term_num)
     }
 
     term.tx_tmr = m_scheduler->createTimer(
-                      Terminal::serial_char_delay,
+                      SERIAL_CHAR_DELAY,
                       std::bind(&IoCardTermMux::mxdToTermCallback, this, term_num, term.tx_byte)
                   );
 
@@ -474,14 +494,20 @@ IoCardTermMux::mxdToTermCallback(int term_num, int byte)
     m_term_t &term = m_terms[term_num];
     term.tx_tmr = nullptr;
 
-    // Route output to appropriate backend: serial port or GUI terminal
-    if (term.serial_port) {
-        // Send to physical terminal via COM port
+    // Route output to appropriate backend: session, serial port, or GUI terminal
+    if (term.session) {
+        // Send to terminal via session abstraction (preferred for headless mode)
+        term.session->mxdToTerm(static_cast<uint8>(byte));
+    } else if (term.serial_port) {
+        // Send to physical terminal via COM port (legacy mode)
         term.serial_port->sendByte(static_cast<uint8>(byte));
-    } else if (term.terminal) {
-        // Send to GUI terminal
+    }
+#ifndef HEADLESS_BUILD
+    else if (term.terminal) {
+        // Send to GUI terminal (desktop mode)
         term.terminal->processChar(static_cast<uint8>(byte));
     }
+#endif
     
     checkTxBuffer(term_num);
 }
@@ -523,6 +549,38 @@ IoCardTermMux::serialRxByte(int term_num, uint8_t byte)
     // if (byte == 0x0A) return; // example: drop bare LF if you previously did that
 
     queueRxByte(term_num, byte);
+}
+
+// ============================================================================
+// Session management for headless terminal server mode
+// ============================================================================
+
+void
+IoCardTermMux::setSession(int term_num, std::shared_ptr<ITermSession> session)
+{
+    assert((0 <= term_num) && (term_num < MAX_TERMINALS));
+    
+    m_term_t &term = m_terms[term_num];
+    
+    // Clean up existing connections
+    if (term.serial_port) {
+        term.serial_port->setReceiveCallback(nullptr);
+        term.serial_port->close();
+        term.serial_port.reset();
+    }
+#ifndef HEADLESS_BUILD
+    term.terminal.reset();
+#endif
+    
+    // Set the new session
+    term.session = session;
+    
+    if (session) {
+        dbglog("IoCardTermMux: Terminal %d connected to session: %s\n", 
+               term_num, session->getDescription().c_str());
+    } else {
+        dbglog("IoCardTermMux: Terminal %d session disconnected\n", term_num);
+    }
 }
 
 // ============================================================================

@@ -3,6 +3,7 @@
 #include "w2200.h"
 
 #include <fstream>
+#include <cstring>
 
 // ======================================================================
 // compile time options
