@@ -56,7 +56,8 @@ TermMuxCfgState::operator==(const CardCfgState &rhs) const noexcept
         for (int i = 0; i < getNumTerminals(); i++) {
             if (m_terminals[i].com_port != rrhs.m_terminals[i].com_port ||
                 m_terminals[i].baud_rate != rrhs.m_terminals[i].baud_rate ||
-                m_terminals[i].flow_control != rrhs.m_terminals[i].flow_control) {
+                m_terminals[i].flow_control != rrhs.m_terminals[i].flow_control ||
+                m_terminals[i].sw_flow_control != rrhs.m_terminals[i].sw_flow_control) {
                 equal = false;
                 break;
             }
@@ -111,6 +112,10 @@ TermMuxCfgState::loadIni(const std::string &subgroup)
         int flow_control;
         host::configReadInt(subgroup, term_prefix + "flow_control", &flow_control, 0);
         m_terminals[i].flow_control = (flow_control != 0);
+        
+        int sw_flow_control;
+        host::configReadInt(subgroup, term_prefix + "sw_flow_control", &sw_flow_control, 0);
+        m_terminals[i].sw_flow_control = (sw_flow_control != 0);
     }
     
     m_initialized = true;
@@ -133,6 +138,7 @@ TermMuxCfgState::saveIni(const std::string &subgroup) const
         host::configWriteStr(subgroup, term_prefix + "com_port", m_terminals[i].com_port);
         host::configWriteInt(subgroup, term_prefix + "baud_rate", m_terminals[i].baud_rate);
         host::configWriteInt(subgroup, term_prefix + "flow_control", m_terminals[i].flow_control ? 1 : 0);
+        host::configWriteInt(subgroup, term_prefix + "sw_flow_control", m_terminals[i].sw_flow_control ? 1 : 0);
     }
 }
 
@@ -185,7 +191,8 @@ TermMuxCfgState::needsReboot(const CardCfgState &other) const noexcept
     for (int i = 0; i < getNumTerminals(); i++) {
         if (m_terminals[i].com_port != oother.m_terminals[i].com_port ||
             m_terminals[i].baud_rate != oother.m_terminals[i].baud_rate ||
-            m_terminals[i].flow_control != oother.m_terminals[i].flow_control) {
+            m_terminals[i].flow_control != oother.m_terminals[i].flow_control ||
+            m_terminals[i].sw_flow_control != oother.m_terminals[i].sw_flow_control) {
             return true;
         }
     }
