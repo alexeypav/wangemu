@@ -508,7 +508,7 @@ system2200::setConfig(const SysCfgState &new_cfg)
                 // Recreate terminal with new COM port settings
                 createTerminalMode();
 #else
-                UI_warn("Terminal mode configuration changes not supported in headless build");
+                UI_warn("Terminal mode configuration changes not supported in terminal server build");
 #endif
             }
             return;
@@ -560,7 +560,7 @@ system2200::setConfig(const SysCfgState &new_cfg)
             createTerminalMode();
             return; // Exit early, no need to build cards
 #else
-            UI_warn("Terminal mode (2236WD) not supported in headless build");
+            UI_warn("Terminal mode (2236WD) not supported in terminal server build");
             return;
 #endif
     }
@@ -1099,7 +1099,6 @@ system2200::dispatchAbsStrobe(uint8 byte)
     // warn the user that a non-existent device has been selected
     if (!ioMap[curIoAddr].ignore && current_cfg->getWarnIo()
         && (curIoAddr != 0x00)  // intentionally select nothing
-        && (curIoAddr != 0x46)  // testing for mxd at 0x4n
         && (curIoAddr != 0x86)  // testing for mxd at 0x8n
         && (curIoAddr != 0xC6)  // testing for mxd at 0xCn
        ) {

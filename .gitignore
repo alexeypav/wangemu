@@ -116,3 +116,4 @@ wangemu
 .vs/
 wangemu-headless
 obj_headless/*
+obj_terminal_server/*

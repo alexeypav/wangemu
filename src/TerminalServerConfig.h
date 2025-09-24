@@ -56,7 +56,7 @@ public:
     TerminalServerConfig();
     
     // MXD configuration
-    int mxdIoAddr = 0x46;              // Default MXD I/O address
+    int mxdIoAddr = 0x00;              // Default MXD I/O address
     int numTerminals = 1;              // Number of active terminals
     
     // Terminal configurations

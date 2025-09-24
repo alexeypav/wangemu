@@ -1,5 +1,5 @@
 #ifdef HEADLESS_BUILD
-#error "IoCardPrinter should not be compiled in headless builds"
+#error "IoCardPrinter should not be compiled in terminal server builds"
 #endif
 
 // Emulate a printer device.  Most of the work is done in the GUI side.

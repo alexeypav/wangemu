@@ -7,7 +7,7 @@ CardInfo::getCardTypeFromName(const std::string &name)
 {
     for (auto &ct : IoCard::card_types) {
         std::unique_ptr<IoCard> tmp_card(IoCard::makeTmpCard(ct));
-        // In headless mode, some card types return nullptr (e.g., display cards)
+        // In terminal server mode, some card types return nullptr (e.g., display cards)
         if (tmp_card == nullptr) {
             continue;
         }

@@ -1,8 +1,8 @@
 // ============================================================================
-// host_headless.cpp - Headless implementation of host services
+// host_headless.cpp - Terminal server implementation of host services
 // 
 // This provides minimal implementations of the host:: functions
-// for running in headless mode without wxWidgets dependencies.
+// for running in terminal server mode without wxWidgets dependencies.
 // Configuration is handled through simple key-value pairs in memory.
 // ============================================================================
 
@@ -47,7 +47,7 @@ static int getStandardDiskControllerAddress(int configured_addr) {
 }
 
 // Create default headless configuration
-static void createHeadlessDefaults() {
+static void createTerminalServerDefaults() {
     // Clear any existing configuration
     config_sections.clear();
     
@@ -108,7 +108,7 @@ static void createHeadlessDefaults() {
     config_sections["wangemu/config-0/com_terminal"]["flow_control"] = "false";
     config_sections["wangemu/config-0/com_terminal"]["sw_flow_control"] = "true";
     
-    fprintf(stderr, "[INFO] Created default headless configuration: MXD at slot 0 (0x000), disk at slot 1 (0x310)\n");
+    fprintf(stderr, "[INFO] Created default terminal server configuration: MXD at slot 0 (0x000), disk at slot 1 (0x310)\n");
 }
 
 // INI file parser that preserves original structure  
@@ -197,7 +197,7 @@ namespace host
 
 void initialize()
 {
-    fprintf(stderr, "[INFO] Host subsystem initialized (headless mode)\n");
+    fprintf(stderr, "[INFO] Host subsystem initialized (terminal server mode)\n");
     
     // Try to load existing wangemu.ini file if it exists
     loadIniFile(ini_filename);
@@ -205,8 +205,8 @@ void initialize()
     if (!config_sections.empty()) {
         fprintf(stderr, "[INFO] Loaded configuration from wangemu.ini\n");
     } else {
-        fprintf(stderr, "[INFO] No wangemu.ini found, creating headless defaults\n");
-        createHeadlessDefaults();
+        fprintf(stderr, "[INFO] No wangemu.ini found, creating terminal server defaults\n");
+        createTerminalServerDefaults();
     }
 }
 
@@ -272,7 +272,7 @@ bool configReadInt(const std::string &subgroup,
                    int *val,
                    int defaultval)
 {
-    // Hard-disable GUI-only devices in headless mode
+    // Hard-disable GUI-only devices in terminal server mode
     if (subgroup == "display" &&
         (key == "num_crt" || key == "enable")) {
         *val = 0;
@@ -282,7 +282,7 @@ bool configReadInt(const std::string &subgroup,
         *val = 0;
         return true;
     }
-    // Terminal server defaults for headless mode
+    // Terminal server defaults
     if (subgroup == "terminal_server" && key == "num_terms") {
         *val = 1;
         return true;
@@ -392,24 +392,24 @@ void configWriteBool(const std::string &subgroup,
     config_sections[section][key] = val ? "true" : "false";
 }
 
-// Forward declarations for headless build
+// Forward declarations for terminal server build
 class wxWindow;
 class wxRect;
 
-// Window geometry functions - no-ops for headless
+// Window geometry functions - no-ops for terminal server
 void configReadWinGeom(wxWindow *wxwin,
                        const std::string &subgroup,
                        wxRect *default_geom,
                        bool client_size)
 {
-    // no-op in headless mode
+    // no-op in terminal server mode
 }
 
 void configWriteWinGeom(wxWindow *wxwin,
                         const std::string &subgroup,
                         bool client_size)
 {
-    // no-op in headless mode
+    // no-op in terminal server mode
 }
 
 // ---- Time functions ----
@@ -449,7 +449,7 @@ std::string asAbsolutePath(const std::string &name)
 
 std::string getAppHome()
 {
-    // In headless mode, use current working directory
+    // In terminal server mode, use current working directory
     char cwd[1024];
     if (getcwd(cwd, sizeof(cwd))) {
         return std::string(cwd);
@@ -462,9 +462,9 @@ std::string getAppHome()
 int fileReq(int requestor, const std::string &title,
             bool readonly, std::string *fullpath)
 {
-    // In headless mode, file requests are not interactive
+    // In terminal server mode, file requests are not interactive
     // Return cancel status
-    fprintf(stderr, "[WARN] Headless: file request '%s' not supported\n", title.c_str());
+    fprintf(stderr, "[WARN] Terminal server: file request '%s' not supported\n", title.c_str());
     return FILEREQ_CANCEL;
 }
 

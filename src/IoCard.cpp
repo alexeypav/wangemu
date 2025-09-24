@@ -5,7 +5,7 @@
 #include "Cpu2200.h"
 #include "DiskCtrlCfgState.h"
 #include "IoCardDisk.h"
-#include "IoCardTermMux.h"  // Terminal mux needed in both GUI and headless builds
+#include "IoCardTermMux.h"  // Terminal mux needed in both GUI and terminal server builds
 #ifndef HEADLESS_BUILD
 #include "IoCardDisplay.h"
 #endif
@@ -94,7 +94,7 @@ IoCard::makeCardImpl(std::shared_ptr<Scheduler> scheduler,
 #else
         case card_t::disp_64x16:
         case card_t::disp_80x24:
-            UI_error("Display cards not supported in headless build");
+            // Display cards silently ignored in terminal server build
             return nullptr;
         case card_t::term_mux:
             crd = std::make_unique<IoCardTermMux>(
@@ -103,7 +103,7 @@ IoCard::makeCardImpl(std::shared_ptr<Scheduler> scheduler,
 #endif
         case card_t::printer:
 #ifdef HEADLESS_BUILD
-            UI_error("Printer cards not supported in headless build");
+            // Printer cards silently ignored in terminal server build
             return nullptr;
 #else
             crd = std::make_unique<IoCardPrinter>(cpu, base_addr, card_slot);

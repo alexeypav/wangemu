@@ -7,6 +7,7 @@ This is a modified version of wangemu, forked from [jtbattle/wangemu](https://gi
 - **Serial communication** over the host's COM ports
 - **Terminal emulation** - use the emulator as a Wang terminal connected to a real Wang 2200 system  
 - **Physical terminal support** - connect a Wang terminal via the host's COM port to the emulator
+- **[Terminal Server](README-TerminalServer.md)** - Linux-based terminal server to use with real terminals, run this on a raspberry-pi (to be tested :))
 
 ## Compatibility
 

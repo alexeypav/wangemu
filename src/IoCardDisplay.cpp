@@ -1,5 +1,5 @@
 #ifdef HEADLESS_BUILD
-#error "IoCardDisplay should not be compiled in headless builds"
+#error "IoCardDisplay should not be compiled in terminal server builds"
 #endif
 
 // This code emulates the 64x16/80x24 display controller.

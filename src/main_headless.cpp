@@ -1,5 +1,5 @@
 // ============================================================================
-// main_headless.cpp - Headless Wang Emulator Terminal Server
+// main_headless.cpp - Wang 2200 Terminal Server
 // 
 // Multi-port terminal server implementation that connects physical Wang terminals
 // via USB-serial adapters to the emulated Wang 2200 system.
@@ -120,7 +120,7 @@ std::function<void(uint8, bool)> createCaptureCallback(int termNum, const std::s
 }
 
 int main(int argc, char* argv[]) {
-    std::cerr << "[INFO] Wang 2200 Headless Terminal Server v1.0\n";
+    std::cerr << "[INFO] Wang 2200 Terminal Server v1.0\n";
     
     // Parse configuration
     TerminalServerConfig config;

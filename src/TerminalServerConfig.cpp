@@ -1,5 +1,5 @@
 // Terminal Server Configuration Implementation
-// Handles INI-based and CLI-based configuration for headless multi-port terminal server
+// Handles INI-based and CLI-based configuration for multi-port terminal server
 
 #include "TerminalServerConfig.h"
 #include "host.h"  // for config functions
@@ -130,7 +130,7 @@ TerminalServerConfig::TerminalServerConfig()
 void TerminalServerConfig::loadFromHostConfig()
 {
     // Load MXD settings
-    host::configReadInt("terminal_server", "mxd_io_addr", &mxdIoAddr, 0x46);
+    host::configReadInt("terminal_server", "mxd_io_addr", &mxdIoAddr, 0x00);
     host::configReadInt("terminal_server", "num_terms", &numTerminals, 1);
     
     // Clamp to valid range
@@ -227,10 +227,28 @@ bool TerminalServerConfig::parseCommandLine(int argc, char* argv[])
         return false;  // Exit after showing status
     }
     
-    if (!terminalServerMode) {
-        std::cerr << "Error: --terminal-server flag required for headless terminal server mode" << std::endl;
-        showHelp();
-        return false;
+    // Always run in terminal server mode - that's what this binary does
+    (void)terminalServerMode;  // Suppress unused variable warning
+    
+    // If no terminals configured, use default terminal 0
+    bool hasEnabledTerminals = false;
+    for (int i = 0; i < MAX_TERMINALS; i++) {
+        if (terminals[i].enabled) {
+            hasEnabledTerminals = true;
+            break;
+        }
+    }
+    
+    if (!hasEnabledTerminals) {
+        std::cerr << "[INFO] No terminals explicitly configured, using default terminal 0" << std::endl;
+        terminals[0].enabled = true;
+        terminals[0].portName = "/dev/ttyUSB0";
+        terminals[0].baudRate = 19200;
+        terminals[0].dataBits = 8;
+        terminals[0].parity = ODDPARITY;
+        terminals[0].stopBits = ONESTOPBIT;
+        terminals[0].swFlowControl = true;
+        terminals[0].hwFlowControl = false;
     }
     
     return true;
@@ -284,10 +302,8 @@ bool TerminalServerConfig::validate() const
         }
     }
     
-    if (enabledCount == 0) {
-        std::cerr << "Error: No terminals configured" << std::endl;
-        return false;
-    }
+    // Validation is done elsewhere, just count enabled terminals here
+    (void)enabledCount;  // Suppress unused variable warning
     
     return true;
 }
@@ -345,12 +361,12 @@ std::string TerminalServerConfig::getStatusJson() const
 
 void TerminalServerConfig::showHelp() const
 {
-    std::cout << "Wang 2200 Headless Terminal Server" << std::endl;
+    std::cout << "Wang 2200 Terminal Server" << std::endl;
     std::cout << std::endl;
-    std::cout << "Usage: wangemu-headless --terminal-server [options]" << std::endl;
+    std::cout << "Usage: wangemu-terminal-server [options]" << std::endl;
     std::cout << std::endl;
     std::cout << "Options:" << std::endl;
-    std::cout << "  --terminal-server          Enable terminal server mode" << std::endl;
+    std::cout << "  --terminal-server          (optional, always enabled by default)" << std::endl;
     std::cout << "  --termN=PORT,BAUD,DATA,PARITY,STOP[,FLOW]" << std::endl;
     std::cout << "                             Configure terminal N (0-3)" << std::endl;
     std::cout << "                             PORT: /dev/ttyUSB0, /dev/ttyACM0, etc." << std::endl;
@@ -359,7 +375,7 @@ void TerminalServerConfig::showHelp() const
     std::cout << "                             PARITY: N (none), O (odd), E (even)" << std::endl;
     std::cout << "                             STOP: 1 or 2" << std::endl;
     std::cout << "                             FLOW: none, xonxoff, rtscts (optional)" << std::endl;
-    std::cout << "  --mxd-addr=ADDR            MXD I/O address (default: 0x46)" << std::endl;
+    std::cout << "  --mxd-addr=ADDR            MXD I/O address (default: 0x00)" << std::endl;
     std::cout << "  --num-terms=N              Number of terminals (1-4, default: 1)" << std::endl;
     std::cout << "  --capture-dir=DIR          Directory for capture files" << std::endl;
     std::cout << "  --ini=PATH                 Load configuration from INI file" << std::endl;
@@ -368,10 +384,10 @@ void TerminalServerConfig::showHelp() const
     std::cout << std::endl;
     std::cout << "Examples:" << std::endl;
     std::cout << "  # Single terminal on USB serial adapter" << std::endl;
-    std::cout << "  wangemu-headless --terminal-server --term0=/dev/ttyUSB0,19200,8,O,1,xonxoff" << std::endl;
+    std::cout << "  wangemu-terminal-server --term0=/dev/ttyUSB0,19200,8,O,1,xonxoff" << std::endl;
     std::cout << std::endl;
     std::cout << "  # Multiple terminals" << std::endl;
-    std::cout << "  wangemu-headless --terminal-server --num-terms=2 \\" << std::endl;
+    std::cout << "  wangemu-terminal-server --num-terms=2 \\" << std::endl;
     std::cout << "    --term0=/dev/ttyUSB0,19200,8,O,1,xonxoff \\" << std::endl;
     std::cout << "    --term1=/dev/ttyUSB1,19200,8,O,1,xonxoff" << std::endl;
 }

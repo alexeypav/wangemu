@@ -188,9 +188,9 @@ SysCfgState::setDefaults()
     setSlotCardType(3, IoCard::card_t::printer);
     setSlotCardAddr(3, 0x215);
 #else
-    // In headless mode, set up terminal mux instead of printer
+    // In terminal server mode, set up terminal mux instead of printer
     setSlotCardType(3, IoCard::card_t::term_mux);
-    setSlotCardAddr(3, 0x46);  // Default MXD address
+    setSlotCardAddr(3, 0x000);  // Default MXD address
 #endif
 
     m_initialized = true;

@@ -183,8 +183,8 @@ IoCardTermMux::IoCardTermMux(std::shared_ptr<Scheduler> scheduler,
             scheduler, this, io_addr, n, UI_SCREEN_2236DE, vp_mode
         );
 #else
-        // In headless mode, terminals are managed via sessions
-        dbglog("IoCardTermMux: Terminal %d available for session connection in headless mode\n", n);
+        // In terminal server mode, terminals are managed via sessions
+        dbglog("IoCardTermMux: Terminal %d available for session connection in terminal server mode\n", n);
 #endif
     }
 }
@@ -496,7 +496,7 @@ IoCardTermMux::mxdToTermCallback(int term_num, int byte)
 
     // Route output to appropriate backend: session, serial port, or GUI terminal
     if (term.session) {
-        // Send to terminal via session abstraction (preferred for headless mode)
+        // Send to terminal via session abstraction (preferred for terminal server mode)
         term.session->mxdToTerm(static_cast<uint8>(byte));
     } else if (term.serial_port) {
         // Send to physical terminal via COM port (legacy mode)

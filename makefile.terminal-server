@@ -1,12 +1,12 @@
-# Headless makefile for wangemu terminal server
+# Terminal server makefile for wangemu
 # This builds wangemu without wxWidgets dependencies for use as a terminal server
 #
 # make targets:
 #
-# make -f makefile.headless         -- shorthand for "make -f makefile.headless debug"
-# make -f makefile.headless debug   -- non-optimized headless build
-# make -f makefile.headless opt     -- optimized headless build
-# make -f makefile.headless clean   -- remove all build products
+# make -f makefile.terminal-server         -- shorthand for "make -f makefile.terminal-server debug"
+# make -f makefile.terminal-server debug   -- non-optimized terminal server build
+# make -f makefile.terminal-server opt     -- optimized terminal server build
+# make -f makefile.terminal-server clean   -- remove all build products
 
 .PHONY: debug opt clean
 
@@ -59,16 +59,16 @@ HEADLESS_CPP_SOURCES := $(FILTERED_CPP_SOURCES) $(filter-out $(FILTERED_CPP_SOUR
 DEPFILES := $(patsubst %.cpp,%.d,$(HEADLESS_CPP_SOURCES)) \
             $(patsubst %.c,%.d,$(C_SOURCES))
 
-OBJFILES := $(patsubst src/%.cpp,obj_headless/%.o,$(HEADLESS_CPP_SOURCES)) \
-            $(patsubst src/%.c,obj_headless/%.o,$(C_SOURCES))
+OBJFILES := $(patsubst src/%.cpp,obj_terminal_server/%.o,$(HEADLESS_CPP_SOURCES)) \
+            $(patsubst src/%.c,obj_terminal_server/%.o,$(C_SOURCES))
 
 # debug build
 debug: OPTFLAGS := -g -O0
-debug: wangemu-headless
+debug: wangemu-terminal-server
 
 # optimized build
 opt: OPTFLAGS := -O2
-opt: wangemu-headless
+opt: wangemu-terminal-server
 
 # Compiler settings for headless build (no wxWidgets)
 CXX         := g++
@@ -86,28 +86,28 @@ endif
 # ===== create the dependency files =====
 
 src/%.d: src/%.cpp
-	$(CXX) $(CXXFLAGS) -MM -MT '$(patsubst src/%.cpp,obj_headless/%.o,$<)' $< -MF $@
+	$(CXX) $(CXXFLAGS) -MM -MT '$(patsubst src/%.cpp,obj_terminal_server/%.o,$<)' $< -MF $@
 
 src/%.d: src/%.c
-	$(CXX) $(CXXFLAGS) -MM -MT '$(patsubst src/%.c,obj_headless/%.o,$<)' $< -MF $@
+	$(CXX) $(CXXFLAGS) -MM -MT '$(patsubst src/%.c,obj_terminal_server/%.o,$<)' $< -MF $@
 
 # ===== build the .o files =====
 
-obj_headless/%.o: src/%.cpp src/%.d
+obj_terminal_server/%.o: src/%.cpp src/%.d
 	@mkdir -p $(dir $@)
 	$(CXX) $(OPTFLAGS) $(CXXFLAGS) $(CXXWARNINGS) -o $@ -c $<
 
-obj_headless/%.o: src/%.c src/%.d
+obj_terminal_server/%.o: src/%.c src/%.d
 	@mkdir -p $(dir $@)
 	$(CXX) $(OPTFLAGS) $(CXXFLAGS) -o $@ -c $<
 
 # ==== link step ====
 
-wangemu-headless: $(OBJFILES)
-	$(CXX) $(LDFLAGS) $(OBJFILES) -o wangemu-headless
+wangemu-terminal-server: $(OBJFILES)
+	$(CXX) $(LDFLAGS) $(OBJFILES) -o wangemu-terminal-server
 
 # ===== clean build products =====
 
 clean:
-	rm -f src/*.d obj_headless/*.o wangemu-headless
-	rm -rf obj_headless/
+	rm -f src/*.d obj_terminal_server/*.o wangemu-terminal-server
+	rm -rf obj_terminal_server/
