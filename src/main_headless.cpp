@@ -128,12 +128,19 @@ int main(int argc, char* argv[]) {
     try {
         // Load from host config (INI-style) first
         host::initialize();
-        config.loadFromHostConfig();
         
-        // Override with command line arguments
+        // First parse command line to check for --ini= argument
         if (!config.parseCommandLine(argc, argv)) {
             return config.shouldExitCleanly() ? 0 : 1; // Clean exit for help/status
         }
+        
+        // Load from specific INI file if provided, otherwise use default
+        if (!config.iniPath.empty()) {
+            host::loadConfigFile(config.iniPath);
+        }
+        
+        // Load configuration from host system (may have been loaded from custom INI)
+        config.loadFromHostConfig();
         
         // Validate configuration
         if (!config.validate()) {

@@ -18,6 +18,7 @@ class Timer;
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <chrono>
 
 class Terminal;
 class Scheduler;
@@ -90,6 +91,10 @@ public:
     uint64_t getTxByteCount() const { return m_txByteCount.load(); }
     void resetCounters() { m_rxByteCount.store(0); m_txByteCount.store(0); }
     
+    // Connection status
+    bool isConnected() const { return m_connected.load(); }
+    int getReconnectAttempts() const { return m_reconnectAttempts.load(); }
+    
     // Capture hooks for debugging
     using CaptureCallback = std::function<void(uint8, bool)>;  // byte, isRx
     void setCaptureCallback(CaptureCallback cb) { m_captureCallback = std::move(cb); }
@@ -141,6 +146,17 @@ private:
     // Statistics counters (thread-safe)
     std::atomic<uint64_t> m_rxByteCount{0};
     std::atomic<uint64_t> m_txByteCount{0};
+    
+    // Reconnection state
+    std::atomic<bool> m_connected{false};
+    std::atomic<int> m_reconnectAttempts{0};
+    std::chrono::steady_clock::time_point m_lastReconnectAttempt;
+    static constexpr int MAX_RECONNECT_ATTEMPTS = 10;
+    static constexpr int BASE_RECONNECT_DELAY_MS = 250;
+    
+    // Internal methods
+    bool attemptReconnect();
+    int getReconnectDelayMs() const;
 
     // Calculate transmission delay based on baud rate and settings
     int64 calculateTransmitDelay() const;

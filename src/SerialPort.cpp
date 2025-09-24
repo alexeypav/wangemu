@@ -572,6 +572,10 @@ bool SerialPort::open(const SerialConfig &config)
 
     // Start receiving thread
     startReceiving();
+    
+    // Reset reconnection state on successful connection
+    m_connected.store(true);
+    m_reconnectAttempts.store(0);
 
     dbglog("SerialPort::open() - Opened %s at %d baud, %d%c%d, flow %s\n",
            config.portName.c_str(), config.baudRate, config.dataBits,
@@ -602,6 +606,9 @@ void SerialPort::close()
         m_txBusy = false;
         m_txTimer = nullptr;
     }
+    
+    // Update connection state
+    m_connected.store(false);
 
     dbglog("SerialPort::close() - Closed %s\n", m_config.portName.c_str());
 }
@@ -716,13 +723,81 @@ void SerialPort::receiveThreadProc()
                         processReceivedByte(buffer[i]);
                     }
                 } else if (bytesRead == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    dbglog("SerialPort::receiveThreadProc - read failed: %s\n", strerror(errno));
-                    break;
+                    dbglog("SerialPort::receiveThreadProc - read failed: %s, attempting reconnection\n", strerror(errno));
+                    m_connected.store(false);
+                    
+                    // Check if we should attempt reconnection
+                    if (m_reconnectAttempts.load() < MAX_RECONNECT_ATTEMPTS) {
+                        int delay = getReconnectDelayMs();
+                        dbglog("SerialPort::receiveThreadProc - Reconnecting in %d ms (attempt %d/%d)\n", 
+                               delay, m_reconnectAttempts.load() + 1, MAX_RECONNECT_ATTEMPTS);
+                        
+                        std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+                        m_reconnectAttempts.fetch_add(1);
+                        m_lastReconnectAttempt = std::chrono::steady_clock::now();
+                        
+                        if (attemptReconnect()) {
+                            dbglog("SerialPort::receiveThreadProc - Reconnection successful\n");
+                            continue; // Continue with the loop
+                        } else {
+                            dbglog("SerialPort::receiveThreadProc - Reconnection failed\n");
+                        }
+                    } else {
+                        dbglog("SerialPort::receiveThreadProc - Max reconnection attempts exceeded\n");
+                        break;
+                    }
+                } else if (bytesRead == 0) {
+                    dbglog("SerialPort::receiveThreadProc - Port disconnected, attempting reconnection\n");
+                    m_connected.store(false);
+                    
+                    // Check if we should attempt reconnection
+                    if (m_reconnectAttempts.load() < MAX_RECONNECT_ATTEMPTS) {
+                        int delay = getReconnectDelayMs();
+                        dbglog("SerialPort::receiveThreadProc - Reconnecting in %d ms (attempt %d/%d)\n", 
+                               delay, m_reconnectAttempts.load() + 1, MAX_RECONNECT_ATTEMPTS);
+                        
+                        std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+                        m_reconnectAttempts.fetch_add(1);
+                        m_lastReconnectAttempt = std::chrono::steady_clock::now();
+                        
+                        if (attemptReconnect()) {
+                            dbglog("SerialPort::receiveThreadProc - Reconnection successful\n");
+                            continue; // Continue with the loop
+                        } else {
+                            dbglog("SerialPort::receiveThreadProc - Reconnection failed\n");
+                        }
+                    } else {
+                        dbglog("SerialPort::receiveThreadProc - Max reconnection attempts exceeded\n");
+                        break;
+                    }
                 }
             }
         } else if (result == -1 && errno != EINTR) {
-            dbglog("SerialPort::receiveThreadProc - select failed: %s\n", strerror(errno));
-            break;
+            dbglog("SerialPort::receiveThreadProc - select failed: %s, attempting reconnection\n", strerror(errno));
+            m_connected.store(false);
+            
+            // Check if we should attempt reconnection
+            if (m_reconnectAttempts.load() < MAX_RECONNECT_ATTEMPTS) {
+                int delay = getReconnectDelayMs();
+                dbglog("SerialPort::receiveThreadProc - Reconnecting in %d ms (attempt %d/%d)\n", 
+                       delay, m_reconnectAttempts.load() + 1, MAX_RECONNECT_ATTEMPTS);
+                
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+                m_reconnectAttempts.fetch_add(1);
+                m_lastReconnectAttempt = std::chrono::steady_clock::now();
+                
+                if (attemptReconnect()) {
+                    dbglog("SerialPort::receiveThreadProc - Reconnection successful\n");
+                    // Update maxfd after reconnection
+                    maxfd = std::max(m_fd, m_cancelPipe[0]);
+                    continue; // Continue with the loop
+                } else {
+                    dbglog("SerialPort::receiveThreadProc - Reconnection failed\n");
+                }
+            } else {
+                dbglog("SerialPort::receiveThreadProc - Max reconnection attempts exceeded\n");
+                break;
+            }
         }
     }
 }
@@ -826,4 +901,30 @@ int64 SerialPort::calculateTransmitDelay() const
     double charTimeUs = (bitsPerChar * 1.0e6) / m_config.baudRate;
     return static_cast<int64>(charTimeUs * 1000.0);
 }
+
+bool SerialPort::attemptReconnect()
+{
+#ifdef _WIN32
+    if (m_handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(m_handle);
+        m_handle = INVALID_HANDLE_VALUE;
+    }
+    return open(m_config);
+#else
+    if (m_fd != -1) {
+        ::close(m_fd);
+        m_fd = -1;
+    }
+    return open(m_config);
+#endif
+}
+
+int SerialPort::getReconnectDelayMs() const
+{
+    int attempts = m_reconnectAttempts.load();
+    // Exponential backoff: 250ms, 500ms, 1s, 2s, 4s, 8s, capped at 10s
+    int delay = BASE_RECONNECT_DELAY_MS * (1 << std::min(attempts, 5));
+    return std::min(delay, 10000); // Cap at 10 seconds
+}
+
 #endif // _WIN32

@@ -216,6 +216,8 @@ bool TerminalServerConfig::parseCommandLine(int argc, char* argv[])
             numTerminals = std::stoi(arg.substr(12));
             if (numTerminals < 1) numTerminals = 1;
             if (numTerminals > MAX_TERMINALS) numTerminals = MAX_TERMINALS;
+        } else if (arg.find("--ini=") == 0) {
+            iniPath = arg.substr(6);
         }
     }
     
@@ -360,6 +362,7 @@ void TerminalServerConfig::showHelp() const
     std::cout << "  --mxd-addr=ADDR            MXD I/O address (default: 0x46)" << std::endl;
     std::cout << "  --num-terms=N              Number of terminals (1-4, default: 1)" << std::endl;
     std::cout << "  --capture-dir=DIR          Directory for capture files" << std::endl;
+    std::cout << "  --ini=PATH                 Load configuration from INI file" << std::endl;
     std::cout << "  --status                   Print status JSON and exit" << std::endl;
     std::cout << "  --help, -h                 Show this help message" << std::endl;
     std::cout << std::endl;

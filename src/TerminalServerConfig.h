@@ -66,6 +66,9 @@ public:
     std::string captureDir;            // Directory for capture files (empty = disabled)
     bool captureEnabled = false;       // Global capture enable
     
+    // INI file settings
+    std::string iniPath;               // Path to INI file to load (empty = default)
+    
     /**
      * Load configuration from host config system (INI-style)
      */

@@ -43,6 +43,9 @@ namespace host
     // this could be avoided by creating/destroying m_config object on each
     // new host, but that is excessive churn during start up / shut down, no?
     void terminate();
+    
+    // load configuration from a specific INI file (headless mode only)
+    void loadConfigFile(const std::string& filename);
 
     // ---- read or write an entry in the configuration file ----
     // there are keys maintained for separate categories.
