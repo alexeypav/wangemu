@@ -20,6 +20,7 @@
 
 // Simple in-memory configuration storage
 static std::map<std::string, std::string> config_store;
+static std::string ini_filename = "wangemu.ini";
 
 // Helper to create config key
 static std::string makeConfigKey(const std::string &subgroup, const std::string &key) {
@@ -84,6 +85,49 @@ static void loadIniFile(const std::string& filename) {
     file.close();
 }
 
+// Save configuration to INI file
+static void saveIniFile(const std::string& filename) {
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        fprintf(stderr, "[ERROR] Could not write to %s\n", filename.c_str());
+        return;
+    }
+    
+    fprintf(stderr, "[INFO] Saving configuration to %s\n", filename.c_str());
+    
+    // Group keys by section
+    std::map<std::string, std::map<std::string, std::string>> sections;
+    
+    for (const auto& entry : config_store) {
+        const std::string& full_key = entry.first;
+        const std::string& value = entry.second;
+        
+        size_t slash_pos = full_key.find('/');
+        if (slash_pos != std::string::npos) {
+            std::string section = full_key.substr(0, slash_pos);
+            std::string key = full_key.substr(slash_pos + 1);
+            sections["wangemu/config-0/" + section][key] = value;
+        }
+    }
+    
+    // Write INI file header
+    file << "[wangemu]\n";
+    file << "configversion=1\n";
+    
+    // Write sections
+    for (const auto& section_entry : sections) {
+        const std::string& section_name = section_entry.first;
+        const std::map<std::string, std::string>& keys = section_entry.second;
+        
+        file << "[" << section_name << "]\n";
+        for (const auto& key_entry : keys) {
+            file << key_entry.first << "=" << key_entry.second << "\n";
+        }
+    }
+    
+    file.close();
+}
+
 namespace host
 {
 
@@ -92,7 +136,7 @@ void initialize()
     fprintf(stderr, "[INFO] Host subsystem initialized (headless mode)\n");
     
     // Try to load existing wangemu.ini file if it exists
-    loadIniFile("wangemu.ini");
+    loadIniFile(ini_filename);
     
     if (!config_store.empty()) {
         fprintf(stderr, "[INFO] Loaded configuration from wangemu.ini\n");
@@ -103,6 +147,9 @@ void initialize()
 
 void terminate()
 {
+    if (!config_store.empty()) {
+        saveIniFile(ini_filename);
+    }
     config_store.clear();
 }
 

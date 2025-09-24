@@ -36,6 +36,18 @@ void signalHandler(int signal) {
     } else {
         std::cerr << "\n[INFO] Received signal " << signal << ", shutting down gracefully...\n";
         running = false;
+        
+        // Save configuration immediately in case of crash
+        try {
+            system2200::cleanup();
+            host::terminate();
+        } catch (...) {
+            // Ignore cleanup errors during signal handling
+        }
+        
+        if (signal == SIGTERM || signal == SIGINT) {
+            exit(0);
+        }
     }
 }
 
