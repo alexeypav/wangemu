@@ -218,6 +218,11 @@ bool TerminalServerConfig::parseCommandLine(int argc, char* argv[])
             if (numTerminals > MAX_TERMINALS) numTerminals = MAX_TERMINALS;
         } else if (arg.find("--ini=") == 0) {
             iniPath = arg.substr(6);
+        } else if (arg == "--web-config") {
+            webServerEnabled = true;
+        } else if (arg.find("--web-port=") == 0) {
+            webServerPort = std::stoi(arg.substr(11));
+            webServerEnabled = true; // Enable web server when port is specified
         }
     }
     
@@ -318,6 +323,10 @@ void TerminalServerConfig::printSummary() const
         std::cout << "  Capture Directory: " << captureDir << std::endl;
     }
     
+    if (webServerEnabled) {
+        std::cout << "  Web Configuration: Enabled on port " << webServerPort << std::endl;
+    }
+    
     std::cout << std::endl << "Terminal Configurations:" << std::endl;
     for (int i = 0; i < numTerminals; i++) {
         if (terminals[i].enabled) {
@@ -379,6 +388,8 @@ void TerminalServerConfig::showHelp() const
     std::cout << "  --num-terms=N              Number of terminals (1-4, default: 1)" << std::endl;
     std::cout << "  --capture-dir=DIR          Directory for capture files" << std::endl;
     std::cout << "  --ini=PATH                 Load configuration from INI file" << std::endl;
+    std::cout << "  --web-config               Enable web configuration interface" << std::endl;
+    std::cout << "  --web-port=PORT            Web server port (default: 8080, enables web interface)" << std::endl;
     std::cout << "  --status                   Print status JSON and exit" << std::endl;
     std::cout << "  --help, -h                 Show this help message" << std::endl;
     std::cout << std::endl;

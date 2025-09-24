@@ -66,6 +66,10 @@ public:
     std::string captureDir;            // Directory for capture files (empty = disabled)
     bool captureEnabled = false;       // Global capture enable
     
+    // Web server settings
+    bool webServerEnabled = false;     // Enable web configuration interface
+    int webServerPort = 8080;          // Web server port
+    
     // INI file settings
     std::string iniPath;               // Path to INI file to load (empty = default)
     

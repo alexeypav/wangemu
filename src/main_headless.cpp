@@ -13,6 +13,8 @@
 #include "IoCardTermMux.h"
 #include "IoCard.h"
 #include "Scheduler.h"
+#include "WebConfigServer.h"
+#include "SysCfgState.h"
 #include <iostream>
 #include <csignal>
 #include <chrono>
@@ -22,17 +24,30 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <unistd.h>
 
 // Global state for graceful shutdown
 static volatile bool running = true;
 static volatile bool dumpStatus = false;
+static volatile bool restartRequested = false;
+static volatile bool internalRestartRequested = false;
 static std::vector<std::shared_ptr<SerialTermSession>> sessions;
 static IoCardTermMux* termMux = nullptr;
+static std::unique_ptr<WebConfigServer> webServer;
+
+// Function to request internal restart from web server (thread-safe)
+void requestInternalRestart() {
+    internalRestartRequested = true;
+}
 
 // Signal handler for graceful shutdown
 void signalHandler(int signal) {
     if (signal == SIGUSR1) {
         dumpStatus = true;
+    } else if (signal == SIGUSR2) {
+        // SIGUSR2 = restart request from web interface
+        restartRequested = true;
+        running = false;
     } else {
         std::cerr << "\n[INFO] Received signal " << signal << ", shutting down gracefully...\n";
         running = false;
@@ -158,6 +173,7 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
     signal(SIGUSR1, signalHandler);  // For runtime status output
+    signal(SIGUSR2, signalHandler);  // For restart requests from web interface
     
     try {
         // Initialize the system2200 emulator core
@@ -227,6 +243,26 @@ int main(int argc, char* argv[]) {
         }
         
         std::cerr << "[INFO] All terminals configured. Starting emulation...\n";
+        
+        // Start web configuration server if enabled
+        if (config.webServerEnabled) {
+            std::string iniPath = config.iniPath.empty() ? "wangemu.ini" : config.iniPath;
+            webServer = std::make_unique<WebConfigServer>(config.webServerPort, iniPath);
+            
+            // Set up restart callback
+            webServer->setRestartCallback([]() {
+                std::cerr << "[INFO] Restart requested from web interface\n";
+                kill(getpid(), SIGUSR2);  // Send restart signal to ourselves
+            });
+            
+            if (webServer->start()) {
+                std::cerr << "[INFO] Web configuration server started on port " << config.webServerPort << "\n";
+                std::cerr << "[INFO] Open http://localhost:" << config.webServerPort << " to configure\n";
+            } else {
+                std::cerr << "[WARN] Failed to start web configuration server\n";
+            }
+        }
+        
         std::cerr << "[INFO] Wang 2200 system ready for terminal connections\n";
         std::cerr << "[INFO] Press Ctrl+C to shutdown gracefully\n";
         
@@ -237,6 +273,34 @@ int main(int argc, char* argv[]) {
             if (dumpStatus) {
                 outputRuntimeStatus();
                 dumpStatus = false;
+            }
+            
+            // Check for internal restart request (safer than doing it in web handler)
+            if (internalRestartRequested) {
+                std::cerr << "[INFO] Internal restart requested, performing safe system reconfiguration...\n";
+                
+                try {
+                    // Reload host configuration from file (same as web handler)
+                    std::string iniPath = config.iniPath.empty() ? "wangemu.ini" : config.iniPath;
+                    host::loadConfigFile(iniPath);
+                    std::cerr << "[INFO] Host configuration reloaded from " << iniPath << "\n";
+                    
+                    // Create new system configuration from host config
+                    SysCfgState newConfig;
+                    newConfig.loadIni();
+                    std::cerr << "[INFO] System configuration loaded from host config\n";
+                    
+                    // Apply the configuration (this is now safe because we're in the main thread)
+                    system2200::setConfig(newConfig);
+                    std::cerr << "[INFO] System configuration applied - internal restart complete\n";
+                    
+                } catch (const std::exception& e) {
+                    std::cerr << "[ERROR] Internal restart failed: " << e.what() << "\n";
+                } catch (...) {
+                    std::cerr << "[ERROR] Internal restart failed: unknown error\n";
+                }
+                
+                internalRestartRequested = false;
             }
             
             // Call the core emulator's idle processing
@@ -266,6 +330,13 @@ int main(int argc, char* argv[]) {
         
         std::cerr << "[INFO] Main loop exited, cleaning up sessions...\n";
         
+        // Stop web server
+        if (webServer) {
+            std::cerr << "[INFO] Stopping web configuration server...\n";
+            webServer->stop();
+            webServer.reset();
+        }
+        
         // Clean up sessions
         for (int i = 0; i < config.numTerminals; i++) {
             if (sessions[i]) {
@@ -286,11 +357,16 @@ int main(int argc, char* argv[]) {
     try {
         system2200::cleanup();
         host::terminate();
-        std::cerr << "[INFO] Shutdown complete\n";
+        if (restartRequested) {
+            std::cerr << "[INFO] Restarting terminal server...\n";
+        } else {
+            std::cerr << "[INFO] Shutdown complete\n";
+        }
     } catch (...) {
         std::cerr << "[ERROR] Exception during cleanup\n";
         return 1;
     }
     
-    return 0;
+    // Return special exit code for restart
+    return restartRequested ? 42 : 0;
 }
