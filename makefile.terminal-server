@@ -48,7 +48,7 @@ EXCLUDE_FILES := src/UiSystem.cpp \
                  src/IoCardPrinter.cpp
 
 # Add headless-specific files
-HEADLESS_ONLY_FILES := src/UiHeadless.cpp src/main_headless.cpp src/host_headless.cpp src/TerminalServerConfig.cpp
+HEADLESS_ONLY_FILES := src/UiHeadless.cpp src/main_headless.cpp src/host_headless.cpp src/TerminalServerConfig.cpp src/WebConfigServer.cpp
 
 # Filter out excluded files
 FILTERED_CPP_SOURCES := $(filter-out $(EXCLUDE_FILES),$(CPP_SOURCES))
