@@ -263,6 +263,12 @@ WebConfigServer::HttpResponse WebConfigServer::handlePostInternalRestart() {
         
         std::cout << "[INFO] Requesting safe internal system restart...\n";
         
+        // Reload configuration to ensure disk_realtime setting is current
+        host::loadConfigFile(m_iniPath);
+        
+        // Apply disk realtime setting immediately (this doesn't require restart)
+        system2200::setDiskRealtime(system2200::config().getDiskRealtime());
+        
         // Instead of doing the restart directly (which can cause race conditions),
         // set a flag for the main thread to perform the restart safely
         extern void requestInternalRestart();  // Defined in main_headless.cpp
@@ -654,6 +660,9 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                    <div class=\"checkbox-group\">\n";
     html << "                        <input type=\"checkbox\" id=\"diskEnabled\" checked> <label for=\"diskEnabled\">Enable Disk Controller</label>\n";
     html << "                    </div>\n";
+    html << "                    <div class=\"checkbox-group\">\n";
+    html << "                        <input type=\"checkbox\" id=\"diskRealtime\" checked> <label for=\"diskRealtime\">Realtime Disk Speed</label>\n";
+    html << "                    </div>\n";
     html << "                </div>\n";
     html << "                \n";
     html << "                <div class=\"row\">\n";
@@ -839,7 +848,7 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            }\n";
     html << "            \n";
     html << "            ini += '[wangemu/config-0/misc]\\n';\n";
-    html << "            ini += 'disk_realtime=true\\n';\n";
+    html << "            ini += 'disk_realtime=' + (document.getElementById('diskRealtime').checked ? 'true' : 'false') + '\\n';\n";
     html << "            ini += 'warnio=' + (document.getElementById('warnInvalidIo').checked ? 'true' : 'false') + '\\n';\n";
     html << "            \n";
     html << "            return ini;\n";
@@ -855,6 +864,7 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            // Misc settings\n";
     html << "            if (config['wangemu/config-0/misc']) {\n";
     html << "                document.getElementById('warnInvalidIo').checked = config['wangemu/config-0/misc']['warnio'] === 'true';\n";
+    html << "                document.getElementById('diskRealtime').checked = config['wangemu/config-0/misc']['disk_realtime'] !== 'false'; // default true\n";
     html << "            }\n";
     html << "            \n";
     html << "            // Terminal settings\n";
