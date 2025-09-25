@@ -85,9 +85,17 @@ make -f makefile.terminal-server-aarch64 opt
 # Output: wangemu-terminal-server-aarch64 (fully static, ~3.4MB)
 ```
 
-The ARM64 binary is statically linked and will run on any aarch64 Linux system regardless of glibc version or distribution.
 
 ## Configuration
+
+### Auto Start
+  1. start-wangemu.sh - Starts the terminal server with --web-config argument
+  2. setup-startup.sh - Configures the system to run the startup script on boot
+
+  On your Raspberry Pi, run:
+  sudo ./setup-startup.sh
+
+  This will add the startup script to /etc/rc.local so it runs automatically on boot.
 
 ### Command Line Options
 

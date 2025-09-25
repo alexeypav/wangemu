@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <sstream>
+#include <iostream>
 #undef min
 #undef max
 // ----------------------------------------------------------------------------
@@ -540,6 +541,10 @@ system2200::setConfig(const SysCfgState &new_cfg)
     // (re)build the CPU
     const int ram_size = (current_cfg->getRamKB()) * 1024;
     int cpu_type = current_cfg->getCpuType();
+    
+    // Debug output for RAM configuration
+    std::cerr << "[DEBUG] system2200::setConfig() - RAM: " << current_cfg->getRamKB() << " KB (" << ram_size << " bytes)\n";
+    std::cerr << "[DEBUG] system2200::setConfig() - CPU Type: " << cpu_type << "\n";
     switch (cpu_type) {
         default:
             assert(false);

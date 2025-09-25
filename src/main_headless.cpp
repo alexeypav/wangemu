@@ -25,11 +25,11 @@
 #include <map>
 #include <mutex>
 #include <unistd.h>
+#include <sys/stat.h>
 
 // Global state for graceful shutdown
 static volatile bool running = true;
 static volatile bool dumpStatus = false;
-static volatile bool restartRequested = false;
 static volatile bool internalRestartRequested = false;
 static std::vector<std::shared_ptr<SerialTermSession>> sessions;
 static IoCardTermMux* termMux = nullptr;
@@ -44,10 +44,6 @@ void requestInternalRestart() {
 void signalHandler(int signal) {
     if (signal == SIGUSR1) {
         dumpStatus = true;
-    } else if (signal == SIGUSR2) {
-        // SIGUSR2 = restart request from web interface
-        restartRequested = true;
-        running = false;
     } else {
         std::cerr << "\n[INFO] Received signal " << signal << ", shutting down gracefully...\n";
         running = false;
@@ -173,12 +169,15 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
     signal(SIGUSR1, signalHandler);  // For runtime status output
-    signal(SIGUSR2, signalHandler);  // For restart requests from web interface
+    
+    // Track what we've successfully initialized for safe cleanup
+    bool system2200_initialized = false;
     
     try {
         // Initialize the system2200 emulator core
         std::cerr << "[INFO] Initializing Wang 2200 emulator...\n";
         system2200::initialize();
+        system2200_initialized = true;
         
         // Find the MXD card at the configured address
         // Note: MXD cards claim addresses base_addr+1 to base_addr+7, not base_addr itself
@@ -213,6 +212,23 @@ int main(int argc, char* argv[]) {
             std::cerr << "[INFO] Setting up terminal " << i << ": " 
                       << config.terminals[i].getDescription() << "\n";
             
+            // Check if serial device exists before attempting to open
+            const std::string& portName = config.terminals[i].portName;
+            if (access(portName.c_str(), F_OK) != 0) {
+                std::cerr << "[ERROR] Serial device " << portName << " does not exist.\n";
+                std::cerr << "[ERROR] Please check:\n";
+                std::cerr << "[ERROR]   - USB-to-serial adapter is connected\n";
+                std::cerr << "[ERROR]   - Device permissions (try: sudo usermod -a -G dialout $USER)\n";
+                std::cerr << "[ERROR]   - Available devices: ls /dev/ttyUSB* /dev/ttyACM*\n";
+                std::cerr << "[ERROR] Terminal server cannot start without valid serial devices.\n";
+                // Clean up what we've initialized so far
+                if (system2200_initialized) {
+                    system2200::cleanup();
+                }
+                host::terminate();
+                return 1;
+            }
+            
             // Create serial port using the shared scheduler from termMux
             auto scheduler = termMux->getScheduler();
             auto serialPort = std::make_shared<SerialPort>(scheduler);
@@ -220,8 +236,17 @@ int main(int argc, char* argv[]) {
             // Open serial port
             SerialConfig serialConfig = config.terminals[i].toSerialConfig();
             if (!serialPort->open(serialConfig)) {
-                std::cerr << "[ERROR] Failed to open " << config.terminals[i].portName 
-                          << " for terminal " << i << "\n";
+                std::cerr << "[ERROR] Failed to open " << portName << " for terminal " << i << "\n";
+                std::cerr << "[ERROR] This could indicate:\n";
+                std::cerr << "[ERROR]   - Device is already in use by another process\n";
+                std::cerr << "[ERROR]   - Insufficient permissions (try: sudo usermod -a -G dialout $USER)\n";
+                std::cerr << "[ERROR]   - Hardware malfunction or incompatible USB-to-serial adapter\n";
+                std::cerr << "[ERROR] Terminal server cannot continue without functional serial port.\n";
+                // Clean up what we've initialized so far
+                if (system2200_initialized) {
+                    system2200::cleanup();
+                }
+                host::terminate();
                 return 1;
             }
             
@@ -249,11 +274,6 @@ int main(int argc, char* argv[]) {
             std::string iniPath = config.iniPath.empty() ? "wangemu.ini" : config.iniPath;
             webServer = std::make_unique<WebConfigServer>(config.webServerPort, iniPath);
             
-            // Set up restart callback
-            webServer->setRestartCallback([]() {
-                std::cerr << "[INFO] Restart requested from web interface\n";
-                kill(getpid(), SIGUSR2);  // Send restart signal to ourselves
-            });
             
             if (webServer->start()) {
                 std::cerr << "[INFO] Web configuration server started on port " << config.webServerPort << "\n";
@@ -288,7 +308,9 @@ int main(int argc, char* argv[]) {
                     // Create new system configuration from host config
                     SysCfgState newConfig;
                     newConfig.loadIni();
-                    std::cerr << "[INFO] System configuration loaded from host config\n";
+                    std::cerr << "[DEBUG] System configuration loaded from host config\n";
+                    std::cerr << "[DEBUG] CPU Type: " << newConfig.getCpuType() << "\n";
+                    std::cerr << "[DEBUG] RAM Size: " << newConfig.getRamKB() << " KB\n";
                     
                     // Apply the configuration (this is now safe because we're in the main thread)
                     system2200::setConfig(newConfig);
@@ -347,26 +369,41 @@ int main(int argc, char* argv[]) {
         
     } catch (const std::exception& e) {
         std::cerr << "[ERROR] Runtime error: " << e.what() << "\n";
+        // Clean up what we've initialized
+        try {
+            if (system2200_initialized) {
+                system2200::cleanup();
+            }
+            host::terminate();
+        } catch (...) {
+            // Ignore cleanup errors during exception handling
+        }
         return 1;
     } catch (...) {
         std::cerr << "[ERROR] Unknown exception\n";
+        // Clean up what we've initialized
+        try {
+            if (system2200_initialized) {
+                system2200::cleanup();
+            }
+            host::terminate();
+        } catch (...) {
+            // Ignore cleanup errors during exception handling
+        }
         return 1;
     }
     
     // Clean shutdown
     try {
-        system2200::cleanup();
-        host::terminate();
-        if (restartRequested) {
-            std::cerr << "[INFO] Restarting terminal server...\n";
-        } else {
-            std::cerr << "[INFO] Shutdown complete\n";
+        if (system2200_initialized) {
+            system2200::cleanup();
         }
+        host::terminate();
+        std::cerr << "[INFO] Shutdown complete\n";
     } catch (...) {
         std::cerr << "[ERROR] Exception during cleanup\n";
         return 1;
     }
     
-    // Return special exit code for restart
-    return restartRequested ? 42 : 0;
+    return 0;
 }

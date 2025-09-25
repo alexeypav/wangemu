@@ -3,6 +3,7 @@
 #include "system2200.h"
 #include "SysCfgState.h"
 #include "IoCardDisk.h"
+#include "Cpu2200.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -137,8 +138,8 @@ void WebConfigServer::handleRequest(int clientSocket, const HttpRequest& request
     } else if (request.method == "POST") {
         if (request.path == "/api/config") {
             response = handlePostConfig(request.body);
-        } else if (request.path == "/api/restart") {
-            response = handlePostRestart();
+        } else if (request.path == "/api/shutdown") {
+            response = handlePostShutdown();
         } else if (request.path == "/api/reload") {
             response = handlePostReloadConfig();
         } else if (request.path == "/api/internal-restart") {
@@ -318,37 +319,35 @@ WebConfigServer::HttpResponse WebConfigServer::handlePostReloadConfig() {
     return response;
 }
 
-WebConfigServer::HttpResponse WebConfigServer::handlePostRestart() {
+
+WebConfigServer::HttpResponse WebConfigServer::handlePostShutdown() {
     HttpResponse response;
     response.headers["Content-Type"] = "application/json";
     response.headers["Access-Control-Allow-Origin"] = "*";
     
-    if (m_restartCallback) {
-        // First reload the configuration, then schedule restart after sending response
-        std::thread([this]() {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            
-            try {
-                // Reload configuration before restart to ensure changes are applied
-                std::cout << "[INFO] Reloading configuration before restart...\n";
-                host::loadConfigFile(m_iniPath);
-                std::cout << "[INFO] Configuration reloaded successfully\n";
-            } catch (const std::exception& e) {
-                std::cerr << "[WARN] Failed to reload configuration before restart: " << e.what() << "\n";
-            } catch (...) {
-                std::cerr << "[WARN] Failed to reload configuration before restart: unknown error\n";
-            }
-            
-            // Now restart
-            m_restartCallback();
-        }).detach();
+    // Execute system shutdown in a separate thread after sending response
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
         
-        response.body = "{\"status\":\"restarting with updated configuration\"}";
-    } else {
-        response.status = 501;
-        response.body = "{\"error\":\"Restart not implemented\"}";
-    }
+        std::cout << "[INFO] System shutdown requested from web interface\n";
+        std::cout << "[INFO] Executing: sudo shutdown -h now\n";
+        
+        // Try different shutdown commands based on system
+        int result = system("sudo shutdown -h now");
+        if (result != 0) {
+            // Fallback to systemctl if shutdown command fails
+            result = system("sudo systemctl poweroff");
+            if (result != 0) {
+                // Last resort - try init
+                result = system("sudo init 0");
+                if (result != 0) {
+                    std::cerr << "[ERROR] Failed to shutdown system - all shutdown commands failed\n";
+                }
+            }
+        }
+    }).detach();
     
+    response.body = "{\"status\":\"System shutdown initiated - server will power off in a few seconds\"}";
     return response;
 }
 
@@ -614,10 +613,7 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                    <div class=\"form-group\">\n";
     html << "                        <label for=\"ram\">RAM:</label>\n";
     html << "                        <select id=\"ram\">\n";
-    html << "                            <option value=\"512\">512 KB</option>\n";
-    html << "                            <option value=\"256\">256 KB</option>\n";
-    html << "                            <option value=\"128\">128 KB</option>\n";
-    html << "                            <option value=\"64\">64 KB</option>\n";
+    html << "                            <!-- RAM options will be populated dynamically based on CPU type -->\n";
     html << "                        </select>\n";
     html << "                    </div>\n";
     html << "                </div>\n";
@@ -706,9 +702,6 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            <div class=\"panel-body\">\n";
     html << "                <div class=\"row\">\n";
     html << "                    <div class=\"checkbox-group\">\n";
-    html << "                        <input type=\"checkbox\" id=\"diskEnabled\" checked> <label for=\"diskEnabled\">Enable Disk Controller</label>\n";
-    html << "                    </div>\n";
-    html << "                    <div class=\"checkbox-group\">\n";
     html << "                        <input type=\"checkbox\" id=\"diskRealtime\" checked> <label for=\"diskRealtime\">Realtime Disk Speed</label>\n";
     html << "                    </div>\n";
     html << "                </div>\n";
@@ -785,7 +778,7 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            <button class=\"btn\" onclick=\"saveAndApplyConfig()\">OK, Apply &amp; Restart</button>\n";
     html << "            <button class=\"btn secondary\" onclick=\"saveConfig()\">Save Only</button>\n";
     html << "            <button class=\"btn secondary\" onclick=\"loadConfig()\">Revert</button>\n";
-    html << "            <button class=\"btn danger\" onclick=\"restartServer()\">Full Process Restart</button>\n";
+    html << "            <button class=\"btn danger\" onclick=\"shutdownSystem()\">Shutdown System</button>\n";
     html << "        </div>\n";
     html << "        \n";
     html << "        <div id=\"status\"></div>\n";
@@ -862,8 +855,8 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                ini += 'terminal' + i + '_sw_flow_control=1\\n'; // Always enable XON/XOFF flow control\n";
     html << "            }\n";
     html << "            \n";
-    html << "            // Disk controller configuration\n";
-    html << "            if (document.getElementById('diskEnabled').checked) {\n";
+    html << "            // Disk controller configuration (always enabled)\n";
+    html << "            {\n";
     html << "                ini += '[wangemu/config-0/io/slot-1]\\n';\n";
     html << "                ini += 'addr=0x310\\n';\n";
     html << "                ini += 'type=6541\\n';\n";
@@ -877,10 +870,6 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                ini += 'intelligence=' + document.getElementById('intelligence').value + '\\n';\n";
     html << "                ini += 'numDrives=' + document.getElementById('numDrives').value + '\\n';\n";
     html << "                ini += 'warnMismatch=' + (document.getElementById('warnMismatch').checked ? 'true' : 'false') + '\\n';\n";
-    html << "            } else {\n";
-    html << "                ini += '[wangemu/config-0/io/slot-1]\\n';\n";
-    html << "                ini += 'addr=\\n';\n";
-    html << "                ini += 'type=\\n';\n";
     html << "            }\n";
     html << "            \n";
     html << "            // Empty slots 2-7\n";
@@ -900,8 +889,10 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "        function loadConfigIntoForm(config) {\n";
     html << "            // CPU and RAM\n";
     html << "            if (config['wangemu/config-0/cpu']) {\n";
-    html << "                document.getElementById('cpu').value = config['wangemu/config-0/cpu']['cpu'] || '2200MVP-C';\n";
-    html << "                document.getElementById('ram').value = config['wangemu/config-0/cpu']['memsize'] || '512';\n";
+    html << "                const cpuType = config['wangemu/config-0/cpu']['cpu'] || '2200MVP-C';\n";
+    html << "                const ramSize = config['wangemu/config-0/cpu']['memsize'] || '512';\n";
+    html << "                document.getElementById('cpu').value = cpuType;\n";
+    html << "                updateRamOptions(cpuType, ramSize);\n";
     html << "            }\n";
     html << "            \n";
     html << "            // Misc settings\n";
@@ -928,16 +919,11 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            // Disk controller settings\n";
     html << "            if (config['wangemu/config-0/io/slot-1']) {\n";
     html << "                const diskSlot = config['wangemu/config-0/io/slot-1'];\n";
-    html << "                const diskEnabled = diskSlot['type'] && diskSlot['type'] !== '';\n";
-    html << "                \n";
-    html << "                document.getElementById('diskEnabled').checked = diskEnabled;\n";
-    html << "                if (diskEnabled) {\n";
-    html << "                    \n";
-    html << "                    // Load disk file paths\n";
-    html << "                    for (let i = 0; i < 4; i++) {\n";
-    html << "                        const diskFile = diskSlot['filename-' + i] || '';\n";
-    html << "                        document.getElementById('disk' + i + 'File').value = diskFile;\n";
-    html << "                    }\n";
+    html << "                // Disk controller is always enabled now, load configuration if available\n";
+    html << "                // Load disk file paths\n";
+    html << "                for (let i = 0; i < 4; i++) {\n";
+    html << "                    const diskFile = diskSlot['filename-' + i] || '';\n";
+    html << "                    document.getElementById('disk' + i + 'File').value = diskFile;\n";
     html << "                }\n";
     html << "            }\n";
     html << "            \n";
@@ -1080,22 +1066,22 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                });\n";
     html << "        }\n";
     html << "        \n";
-    html << "        function restartServer() {\n";
-    html << "            if (!confirm('Are you sure you want to restart the terminal server? Active connections will be interrupted.')) {\n";
+    html << "        function shutdownSystem() {\n";
+    html << "            if (!confirm('Are you sure you want to shutdown the operating system? This will power off the entire system.')) {\n";
     html << "                return;\n";
     html << "            }\n";
     html << "            \n";
-    html << "            fetch('/api/restart', { method: 'POST' })\n";
+    html << "            fetch('/api/shutdown', { method: 'POST' })\n";
     html << "                .then(function(response) { return response.json(); })\n";
     html << "                .then(function(data) {\n";
     html << "                    if (data.error) {\n";
     html << "                        showStatus('Error: ' + data.error, true);\n";
     html << "                    } else {\n";
-    html << "                        showStatus('Terminal server is restarting with updated configuration...');\n";
+    html << "                        showStatus('System is shutting down - goodbye!');\n";
     html << "                    }\n";
     html << "                })\n";
     html << "                .catch(function(error) {\n";
-    html << "                    showStatus('Error restarting server: ' + error, true);\n";
+    html << "                    showStatus('Error shutting down system: ' + error, true);\n";
     html << "                });\n";
     html << "        }\n";
     html << "        \n";
@@ -1228,6 +1214,43 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            });\n";
     html << "        }\n";
     html << "        \n";
+    html << "        // Function to update RAM options based on CPU type (matching GUI behavior)\n";
+    html << "        function updateRamOptions(cpuType, selectedRam) {\n";
+    html << "            const ramSelect = document.getElementById('ram');\n";
+    html << "            ramSelect.innerHTML = ''; // Clear existing options\n";
+    html << "            \n";
+    html << "            // Define RAM options for each CPU type (matches system2200.cpp)\n";
+    html << "            const ramOptions = {\n";
+    html << "                '2200B': [4, 8, 12, 16, 24, 32],\n";
+    html << "                '2200T': [8, 16, 24, 32],\n";
+    html << "                '2200VP': [16, 32, 48, 64],\n";
+    html << "                '2200MVP-C': [32, 64, 128, 256, 512],\n";
+    html << "                'MicroVP': [128, 512, 1024, 2048, 4096, 8192]\n";
+    html << "            };\n";
+    html << "            \n";
+    html << "            const availableRam = ramOptions[cpuType] || ramOptions['2200MVP-C'];\n";
+    html << "            \n";
+    html << "            // Add options to dropdown\n";
+    html << "            for (const ramSize of availableRam) {\n";
+    html << "                const option = document.createElement('option');\n";
+    html << "                option.value = ramSize;\n";
+    html << "                if (ramSize < 1024) {\n";
+    html << "                    option.textContent = ramSize + ' KB';\n";
+    html << "                } else {\n";
+    html << "                    option.textContent = (ramSize / 1024) + ' MB';\n";
+    html << "                }\n";
+    html << "                ramSelect.appendChild(option);\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            // Try to select the previously selected RAM size if valid\n";
+    html << "            if (selectedRam && ramSelect.querySelector(`option[value=\"${selectedRam}\"]`)) {\n";
+    html << "                ramSelect.value = selectedRam;\n";
+    html << "            } else {\n";
+    html << "                // If not valid, select the largest available RAM size\n";
+    html << "                ramSelect.value = availableRam[availableRam.length - 1];\n";
+    html << "            }\n";
+    html << "        }\n";
+    html << "        \n";
     html << "        // Function to update drive slot visibility based on selected number of drives\n";
     html << "        function updateDriveSlots() {\n";
     html << "            const numDrives = parseInt(document.getElementById('numDrives').value);\n";
@@ -1269,9 +1292,17 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            radio.addEventListener('change', updateTerminalRows);\n";
     html << "        });\n";
     html << "        \n";
+    html << "        // Add event listener to CPU dropdown to update RAM options\n";
+    html << "        document.getElementById('cpu').addEventListener('change', function() {\n";
+    html << "            const selectedCpu = this.value;\n";
+    html << "            const currentRam = document.getElementById('ram').value;\n";
+    html << "            updateRamOptions(selectedCpu, currentRam);\n";
+    html << "        });\n";
+    html << "        \n";
     html << "        // Initial updates\n";
     html << "        updateDriveSlots();\n";
     html << "        updateTerminalRows();\n";
+    html << "        updateRamOptions('2200MVP-C', '512'); // Initialize with default values\n";
     html << "        updateDiskStatus();\n";
     html << "    </script>\n";
     html << "</body>\n";

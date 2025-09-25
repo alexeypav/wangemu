@@ -37,17 +37,12 @@ public:
      */
     int getPort() const { return m_port; }
     
-    /**
-     * Set callback for terminal server restart request
-     */
-    void setRestartCallback(std::function<void()> callback) { m_restartCallback = callback; }
 
 private:
     int m_port;
     std::string m_iniPath;
     std::atomic<bool> m_running{false};
     std::thread m_serverThread;
-    std::function<void()> m_restartCallback;
     
     // HTTP request handler
     void serverLoop();
@@ -71,7 +66,7 @@ private:
     void handleRequest(int clientSocket, const HttpRequest& request);
     HttpResponse handleGetConfig();
     HttpResponse handlePostConfig(const std::string& body);
-    HttpResponse handlePostRestart();
+    HttpResponse handlePostShutdown();
     HttpResponse handlePostReloadConfig();
     HttpResponse handlePostInternalRestart();
     HttpResponse handlePostDiskInsert(const std::string& body);
