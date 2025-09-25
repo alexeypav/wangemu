@@ -1,0 +1,119 @@
+# Terminal server makefile for wangemu - aarch64 cross-compilation
+# This builds wangemu without wxWidgets dependencies for use as a terminal server on aarch64
+#
+# Prerequisites: Install cross-compilation toolchain:
+#   sudo apt update
+#   sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+#
+# make targets:
+#
+# make -f makefile.terminal-server-aarch64         -- shorthand for "make -f makefile.terminal-server-aarch64 debug"
+# make -f makefile.terminal-server-aarch64 debug   -- non-optimized terminal server build
+# make -f makefile.terminal-server-aarch64 opt     -- optimized terminal server build
+# make -f makefile.terminal-server-aarch64 clean   -- remove all build products
+
+.PHONY: debug opt clean
+
+# Add .d to Make's recognized suffixes.
+.SUFFIXES: .c .cpp .d .o
+
+# don't create dependency files for these targets
+NODEPS := clean
+
+# Find all the source files in the src/ directory
+CPP_SOURCES := $(shell find src -name "*.cpp")
+C_SOURCES   := $(shell find src -name "*.c")
+H_SOURCES   := $(shell find src -name "*.h")
+
+# Exclude wxWidgets-dependent files for headless build
+EXCLUDE_FILES := src/UiSystem.cpp \
+                 src/UiCrtFrame.cpp \
+                 src/UiCrtConfigDlg.cpp \
+                 src/UiCrt_Keyboard.cpp \
+                 src/UiCrt_Keyboard_martin.cpp \
+                 src/UiCrtStatusBar.cpp \
+                 src/UiSystemConfigDlg.cpp \
+                 src/UiTermMuxCfgDlg.cpp \
+                 src/UiPrinterFrame.cpp \
+                 src/UiPrinterConfigDlg.cpp \
+                 src/UiPrinter.cpp \
+                 src/UiMyStaticText.cpp \
+                 src/UiMyAboutDlg.cpp \
+                 src/UiDiskCtrlCfgDlg.cpp \
+                 src/UiDiskFactory.cpp \
+                 src/UiControlFrame.cpp \
+                 src/UiCrt_Render.cpp \
+                 src/UiCrt_Charset.cpp \
+                 src/UiCrtErrorDlg.cpp \
+                 src/UiCrt.cpp \
+                 src/host.cpp \
+                 src/Terminal.cpp \
+                 src/IoCardDisplay.cpp \
+                 src/IoCardPrinter.cpp
+
+# Add headless-specific files
+HEADLESS_ONLY_FILES := src/UiHeadless.cpp src/main_headless.cpp src/host_headless.cpp src/TerminalServerConfig.cpp src/WebConfigServer.cpp
+
+# Filter out excluded files
+FILTERED_CPP_SOURCES := $(filter-out $(EXCLUDE_FILES),$(CPP_SOURCES))
+# Add headless-only files (avoid duplicates)
+HEADLESS_CPP_SOURCES := $(FILTERED_CPP_SOURCES) $(filter-out $(FILTERED_CPP_SOURCES),$(HEADLESS_ONLY_FILES))
+
+# These are the dependency files, which make will clean up after it creates them
+DEPFILES := $(patsubst %.cpp,%.d,$(HEADLESS_CPP_SOURCES)) \
+            $(patsubst %.c,%.d,$(C_SOURCES))
+
+OBJFILES := $(patsubst src/%.cpp,obj_terminal_server_aarch64/%.o,$(HEADLESS_CPP_SOURCES)) \
+            $(patsubst src/%.c,obj_terminal_server_aarch64/%.o,$(C_SOURCES))
+
+# debug build
+debug: OPTFLAGS := -g -O0
+debug: wangemu-terminal-server-aarch64
+
+# optimized build
+opt: OPTFLAGS := -O2
+opt: wangemu-terminal-server-aarch64
+
+# Cross-compiler settings for aarch64
+CROSS_PREFIX    := aarch64-linux-gnu-
+CXX             := $(CROSS_PREFIX)g++
+CC              := $(CROSS_PREFIX)gcc
+CXXFLAGS        := -std=c++14 -fno-common -pthread -DHEADLESS_BUILD
+CXXWARNINGS     := -Wall -Wextra -Wshadow -Wformat -Wundef -Wstrict-aliasing=1 \
+                   -Wno-deprecated-declarations \
+                   -Wno-ctor-dtor-privacy -Woverloaded-virtual
+LDFLAGS         := -pthread -static
+
+# don't create dependencies when we're cleaning, for instance
+ifeq (0, $(words $(findstring $(MAKECMDGOALS), $(NODEPS))))
+    -include $(DEPFILES)
+endif
+
+# ===== create the dependency files =====
+
+src/%.d: src/%.cpp
+	$(CXX) $(CXXFLAGS) -MM -MT '$(patsubst src/%.cpp,obj_terminal_server_aarch64/%.o,$<)' $< -MF $@
+
+src/%.d: src/%.c
+	$(CXX) $(CXXFLAGS) -MM -MT '$(patsubst src/%.c,obj_terminal_server_aarch64/%.o,$<)' $< -MF $@
+
+# ===== build the .o files =====
+
+obj_terminal_server_aarch64/%.o: src/%.cpp src/%.d
+	@mkdir -p $(dir $@)
+	$(CXX) $(OPTFLAGS) $(CXXFLAGS) $(CXXWARNINGS) -o $@ -c $<
+
+obj_terminal_server_aarch64/%.o: src/%.c src/%.d
+	@mkdir -p $(dir $@)
+	$(CXX) $(OPTFLAGS) $(CXXFLAGS) -o $@ -c $<
+
+# ==== link step ====
+
+wangemu-terminal-server-aarch64: $(OBJFILES)
+	$(CXX) $(LDFLAGS) $(OBJFILES) -o wangemu-terminal-server-aarch64
+
+# ===== clean build products =====
+
+clean:
+	rm -f src/*.d obj_terminal_server_aarch64/*.o wangemu-terminal-server-aarch64
+	rm -rf obj_terminal_server_aarch64/

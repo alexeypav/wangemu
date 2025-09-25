@@ -69,6 +69,24 @@ make -f makefile.terminal-server clean
 
 The terminal server build excludes all GUI components and dependencies, creating a lightweight (~4MB) binary optimized for server deployment.
 
+### Cross-Compilation for ARM64/aarch64
+
+To build for ARM64 systems (like Raspberry Pi 4+, ARM-based servers):
+
+```bash
+# Install cross-compilation toolchain (Ubuntu/Debian)
+sudo apt update
+sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+# Build static ARM64 binary
+make -f makefile.terminal-server-aarch64 clean
+make -f makefile.terminal-server-aarch64 opt
+
+# Output: wangemu-terminal-server-aarch64 (fully static, ~3.4MB)
+```
+
+The ARM64 binary is statically linked and will run on any aarch64 Linux system regardless of glibc version or distribution.
+
 ## Configuration
 
 ### Command Line Options
