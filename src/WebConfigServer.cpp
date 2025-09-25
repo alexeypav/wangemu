@@ -126,6 +126,8 @@ void WebConfigServer::handleRequest(int clientSocket, const HttpRequest& request
             response = handleGetRoot();
         } else if (request.path == "/api/config") {
             response = handleGetConfig();
+        } else if (request.path == "/api/disk-status") {
+            response = handleGetDiskStatus();
         } else if (request.path.find("/static/") == 0) {
             response = serveStaticFile(request.path);
         } else {
@@ -399,6 +401,14 @@ WebConfigServer::HttpResponse WebConfigServer::handlePostDiskInsert(const std::s
         
         std::cout << "[INFO] Inserting disk: slot=" << slot << ", drive=" << drive << ", file=" << filename << "\n";
         
+        // Check if drive already has a disk (like GUI does)
+        const int status = IoCardDisk::wvdDriveStatus(slot, drive);
+        if ((status & IoCardDisk::WVD_STAT_DRIVE_OCCUPIED) != 0) {
+            response.status = 400;
+            response.body = "{\"error\":\"Drive already contains a disk. Remove it first.\"}";
+            return response;
+        }
+        
         // Use the same direct disk operation as the GUI
         bool ok = IoCardDisk::wvdInsertDisk(slot, drive, filename);
         
@@ -462,6 +472,14 @@ WebConfigServer::HttpResponse WebConfigServer::handlePostDiskRemove(const std::s
         
         std::cout << "[INFO] Removing disk: slot=" << slot << ", drive=" << drive << "\n";
         
+        // Check if drive actually has a disk to remove
+        const int status = IoCardDisk::wvdDriveStatus(slot, drive);
+        if ((status & IoCardDisk::WVD_STAT_DRIVE_OCCUPIED) == 0) {
+            response.status = 400;
+            response.body = "{\"error\":\"No disk in drive to remove.\"}";
+            return response;
+        }
+        
         // Use the same direct disk operation as the GUI
         bool ok = IoCardDisk::wvdRemoveDisk(slot, drive);
         
@@ -482,6 +500,46 @@ WebConfigServer::HttpResponse WebConfigServer::handlePostDiskRemove(const std::s
         response.status = 500;
         response.body = "{\"error\":\"Failed to remove disk: unknown error\"}";
         std::cerr << "[ERROR] Failed to remove disk: unknown error\n";
+    }
+    
+    return response;
+}
+
+WebConfigServer::HttpResponse WebConfigServer::handleGetDiskStatus() {
+    HttpResponse response;
+    response.headers["Content-Type"] = "application/json";
+    response.headers["Access-Control-Allow-Origin"] = "*";
+    
+    try {
+        std::ostringstream json;
+        json << "{\"drives\":[";
+        
+        // Check status of drives 0-3 in slot 1
+        for (int drive = 0; drive < 4; drive++) {
+            if (drive > 0) json << ",";
+            
+            const int status = IoCardDisk::wvdDriveStatus(1, drive);
+            const bool exists = (status & IoCardDisk::WVD_STAT_DRIVE_EXISTENT) != 0;
+            const bool occupied = (status & IoCardDisk::WVD_STAT_DRIVE_OCCUPIED) != 0;
+            const bool busy = (status & IoCardDisk::WVD_STAT_DRIVE_BUSY) != 0;
+            
+            json << "{\"drive\":" << drive 
+                 << ",\"exists\":" << (exists ? "true" : "false")
+                 << ",\"occupied\":" << (occupied ? "true" : "false") 
+                 << ",\"busy\":" << (busy ? "true" : "false") << "}";
+        }
+        
+        json << "]}";
+        response.body = json.str();
+        
+    } catch (const std::exception& e) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to get disk status: " + std::string(e.what()) + "\"}";
+        std::cerr << "[ERROR] Failed to get disk status: " << e.what() << "\n";
+    } catch (...) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to get disk status: unknown error\"}";
+        std::cerr << "[ERROR] Failed to get disk status: unknown error\n";
     }
     
     return response;
@@ -511,7 +569,7 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "        .form-group select { width: 150px; }\n";
     html << "        .form-group input[type=\"text\"] { width: 200px; }\n";
     html << "        .form-group input[type=\"number\"] { width: 80px; }\n";
-    html << "        .terminal-grid { display: grid; grid-template-columns: 80px 100px 200px 80px 120px auto; gap: 10px; align-items: center; margin-bottom: 8px; }\n";
+    html << "        .terminal-grid { display: grid; grid-template-columns: 80px 200px 80px auto; gap: 10px; align-items: center; margin-bottom: 8px; }\n";
     html << "        .terminal-grid:first-child { font-weight: bold; background: #f5f5f5; padding: 8px 0; margin-bottom: 15px; }\n";
     html << "        .terminal-grid input[type=\"checkbox\"] { justify-self: center; }\n";
     html << "        .num-terminals { margin-bottom: 20px; }\n";
@@ -583,16 +641,13 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                \n";
     html << "                <div class=\"terminal-grid\">\n";
     html << "                    <div>Terminal</div>\n";
-    html << "                    <div>Use Port</div>\n";
     html << "                    <div>Port Name</div>\n";
     html << "                    <div>Baud Rate</div>\n";
-    html << "                    <div>XON/XOFF Flow</div>\n";
     html << "                    <div></div>\n";
     html << "                </div>\n";
     html << "                \n";
-    html << "                <div class=\"terminal-grid\">\n";
+    html << "                <div class=\"terminal-grid terminal-row\" id=\"terminalRow0\">\n";
     html << "                    <div>Terminal 1</div>\n";
-    html << "                    <input type=\"checkbox\" id=\"term1_enabled\" checked>\n";
     html << "                    <input type=\"text\" id=\"term1_port\" value=\"/dev/ttyUSB0\" placeholder=\"/dev/ttyUSB0\">\n";
     html << "                    <select id=\"term1_baud\">\n";
     html << "                        <option value=\"19200\" selected>19200</option>\n";
@@ -601,13 +656,11 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                        <option value=\"2400\">2400</option>\n";
     html << "                        <option value=\"1200\">1200</option>\n";
     html << "                    </select>\n";
-    html << "                    <input type=\"checkbox\" id=\"term1_flow\" checked>\n";
     html << "                    <div></div>\n";
     html << "                </div>\n";
     html << "                \n";
-    html << "                <div class=\"terminal-grid\">\n";
+    html << "                <div class=\"terminal-grid terminal-row\" id=\"terminalRow1\" style=\"display: none;\">\n";
     html << "                    <div>Terminal 2</div>\n";
-    html << "                    <input type=\"checkbox\" id=\"term2_enabled\">\n";
     html << "                    <input type=\"text\" id=\"term2_port\" value=\"/dev/ttyUSB1\" placeholder=\"/dev/ttyUSB1\">\n";
     html << "                    <select id=\"term2_baud\">\n";
     html << "                        <option value=\"19200\" selected>19200</option>\n";
@@ -616,13 +669,11 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                        <option value=\"2400\">2400</option>\n";
     html << "                        <option value=\"1200\">1200</option>\n";
     html << "                    </select>\n";
-    html << "                    <input type=\"checkbox\" id=\"term2_flow\" checked>\n";
     html << "                    <div></div>\n";
     html << "                </div>\n";
     html << "                \n";
-    html << "                <div class=\"terminal-grid\">\n";
+    html << "                <div class=\"terminal-grid terminal-row\" id=\"terminalRow2\" style=\"display: none;\">\n";
     html << "                    <div>Terminal 3</div>\n";
-    html << "                    <input type=\"checkbox\" id=\"term3_enabled\">\n";
     html << "                    <input type=\"text\" id=\"term3_port\" value=\"/dev/ttyUSB2\" placeholder=\"/dev/ttyUSB2\">\n";
     html << "                    <select id=\"term3_baud\">\n";
     html << "                        <option value=\"19200\" selected>19200</option>\n";
@@ -631,13 +682,11 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                        <option value=\"2400\">2400</option>\n";
     html << "                        <option value=\"1200\">1200</option>\n";
     html << "                    </select>\n";
-    html << "                    <input type=\"checkbox\" id=\"term3_flow\" checked>\n";
     html << "                    <div></div>\n";
     html << "                </div>\n";
     html << "                \n";
-    html << "                <div class=\"terminal-grid\">\n";
+    html << "                <div class=\"terminal-grid terminal-row\" id=\"terminalRow3\" style=\"display: none;\">\n";
     html << "                    <div>Terminal 4</div>\n";
-    html << "                    <input type=\"checkbox\" id=\"term4_enabled\">\n";
     html << "                    <input type=\"text\" id=\"term4_port\" value=\"/dev/ttyUSB3\" placeholder=\"/dev/ttyUSB3\">\n";
     html << "                    <select id=\"term4_baud\">\n";
     html << "                        <option value=\"19200\" selected>19200</option>\n";
@@ -646,7 +695,6 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                        <option value=\"2400\">2400</option>\n";
     html << "                        <option value=\"1200\">1200</option>\n";
     html << "                    </select>\n";
-    html << "                    <input type=\"checkbox\" id=\"term4_flow\" checked>\n";
     html << "                    <div></div>\n";
     html << "                </div>\n";
     html << "            </div>\n";
@@ -699,8 +747,7 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                    <label>Drive 1:</label>\n";
     html << "                    <div style=\"display: flex; align-items: center; gap: 10px;\">\n";
     html << "                        <input type=\"text\" id=\"disk0File\" style=\"width: 300px;\" placeholder=\"Path to disk image file (.wvd)\">\n";
-    html << "                        <button type=\"button\" class=\"btn secondary\" onclick=\"insertDisk(1, 0)\">Insert</button>\n";
-    html << "                        <button type=\"button\" class=\"btn danger\" onclick=\"removeDisk(1, 0)\">Remove</button>\n";
+    html << "                        <button type=\"button\" id=\"disk0Button\" class=\"btn secondary\" onclick=\"toggleDisk(1, 0)\">Insert</button>\n";
     html << "                        <span id=\"disk0Status\" style=\"color: #666;\"></span>\n";
     html << "                    </div>\n";
     html << "                </div>\n";
@@ -709,8 +756,7 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                    <label>Drive 2:</label>\n";
     html << "                    <div style=\"display: flex; align-items: center; gap: 10px;\">\n";
     html << "                        <input type=\"text\" id=\"disk1File\" style=\"width: 300px;\" placeholder=\"Path to disk image file (.wvd)\">\n";
-    html << "                        <button type=\"button\" class=\"btn secondary\" onclick=\"insertDisk(1, 1)\">Insert</button>\n";
-    html << "                        <button type=\"button\" class=\"btn danger\" onclick=\"removeDisk(1, 1)\">Remove</button>\n";
+    html << "                        <button type=\"button\" id=\"disk1Button\" class=\"btn secondary\" onclick=\"toggleDisk(1, 1)\">Insert</button>\n";
     html << "                        <span id=\"disk1Status\" style=\"color: #666;\"></span>\n";
     html << "                    </div>\n";
     html << "                </div>\n";
@@ -719,8 +765,7 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                    <label>Drive 3:</label>\n";
     html << "                    <div style=\"display: flex; align-items: center; gap: 10px;\">\n";
     html << "                        <input type=\"text\" id=\"disk2File\" style=\"width: 300px;\" placeholder=\"Path to disk image file (.wvd)\">\n";
-    html << "                        <button type=\"button\" class=\"btn secondary\" onclick=\"insertDisk(1, 2)\">Insert</button>\n";
-    html << "                        <button type=\"button\" class=\"btn danger\" onclick=\"removeDisk(1, 2)\">Remove</button>\n";
+    html << "                        <button type=\"button\" id=\"disk2Button\" class=\"btn secondary\" onclick=\"toggleDisk(1, 2)\">Insert</button>\n";
     html << "                        <span id=\"disk2Status\" style=\"color: #666;\"></span>\n";
     html << "                    </div>\n";
     html << "                </div>\n";
@@ -729,8 +774,7 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                    <label>Drive 4:</label>\n";
     html << "                    <div style=\"display: flex; align-items: center; gap: 10px;\">\n";
     html << "                        <input type=\"text\" id=\"disk3File\" style=\"width: 300px;\" placeholder=\"Path to disk image file (.wvd)\">\n";
-    html << "                        <button type=\"button\" class=\"btn secondary\" onclick=\"insertDisk(1, 3)\">Insert</button>\n";
-    html << "                        <button type=\"button\" class=\"btn danger\" onclick=\"removeDisk(1, 3)\">Remove</button>\n";
+    html << "                        <button type=\"button\" id=\"disk3Button\" class=\"btn secondary\" onclick=\"toggleDisk(1, 3)\">Insert</button>\n";
     html << "                        <span id=\"disk3Status\" style=\"color: #666;\"></span>\n";
     html << "                    </div>\n";
     html << "                </div>\n";
@@ -808,15 +852,14 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            ini += 'numTerminals=' + numTerminals + '\\n';\n";
     html << "            \n";
     html << "            for (let i = 0; i < 4; i++) {\n";
-    html << "                const enabled = document.getElementById('term' + (i+1) + '_enabled').checked;\n";
+    html << "                const enabled = i < numTerminals; // Enable based on number of terminals selected\n";
     html << "                const port = document.getElementById('term' + (i+1) + '_port').value;\n";
     html << "                const baud = document.getElementById('term' + (i+1) + '_baud').value;\n";
-    html << "                const flow = document.getElementById('term' + (i+1) + '_flow').checked ? '1' : '0';\n";
     html << "                \n";
     html << "                ini += 'terminal' + i + '_baud_rate=' + baud + '\\n';\n";
     html << "                ini += 'terminal' + i + '_com_port=' + (enabled ? port : '') + '\\n';\n";
     html << "                ini += 'terminal' + i + '_flow_control=0\\n';\n";
-    html << "                ini += 'terminal' + i + '_sw_flow_control=' + flow + '\\n';\n";
+    html << "                ini += 'terminal' + i + '_sw_flow_control=1\\n'; // Always enable XON/XOFF flow control\n";
     html << "            }\n";
     html << "            \n";
     html << "            // Disk controller configuration\n";
@@ -876,12 +919,9 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                for (let i = 0; i < 4; i++) {\n";
     html << "                    const port = cardcfg['terminal' + i + '_com_port'] || '';\n";
     html << "                    const baud = cardcfg['terminal' + i + '_baud_rate'] || '19200';\n";
-    html << "                    const flow = cardcfg['terminal' + i + '_sw_flow_control'] === '1';\n";
     html << "                    \n";
-    html << "                    document.getElementById('term' + (i+1) + '_enabled').checked = port !== '';\n";
     html << "                    document.getElementById('term' + (i+1) + '_port').value = port || '/dev/ttyUSB' + i;\n";
     html << "                    document.getElementById('term' + (i+1) + '_baud').value = baud;\n";
-    html << "                    document.getElementById('term' + (i+1) + '_flow').checked = flow;\n";
     html << "                }\n";
     html << "            }\n";
     html << "            \n";
@@ -924,6 +964,8 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                        currentConfig = parseIniConfig(data.iniContent);\n";
     html << "                        loadConfigIntoForm(currentConfig);\n";
     html << "                        updateDriveSlots(); // Update drive slots visibility\n";
+    html << "                        updateTerminalRows(); // Update terminal rows visibility\n";
+    html << "                        updateDiskStatus(); // Update disk button states\n";
     html << "                        document.getElementById('rawConfigEditor').value = data.iniContent;\n";
     html << "                        showStatus('Configuration loaded successfully');\n";
     html << "                    }\n";
@@ -1070,6 +1112,58 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "        }\n";
     html << "        \n";
     html << "        // Direct disk operations (like GUI)\n";
+    html << "        // Get current disk status and update UI\n";
+    html << "        function updateDiskStatus() {\n";
+    html << "            fetch('/api/disk-status')\n";
+    html << "            .then(function(response) { return response.json(); })\n";
+    html << "            .then(function(data) {\n";
+    html << "                if (data.error) {\n";
+    html << "                    showStatus('Error getting disk status: ' + data.error, true);\n";
+    html << "                    return;\n";
+    html << "                }\n";
+    html << "                \n";
+    html << "                for (let i = 0; i < data.drives.length; i++) {\n";
+    html << "                    const drive = data.drives[i];\n";
+    html << "                    const button = document.getElementById('disk' + i + 'Button');\n";
+    html << "                    const status = document.getElementById('disk' + i + 'Status');\n";
+    html << "                    \n";
+    html << "                    if (!drive.exists) {\n";
+    html << "                        button.disabled = true;\n";
+    html << "                        button.textContent = 'N/A';\n";
+    html << "                        button.className = 'btn secondary';\n";
+    html << "                        status.textContent = 'Drive not available';\n";
+    html << "                        status.style.color = '#999';\n";
+    html << "                    } else if (drive.occupied) {\n";
+    html << "                        button.disabled = drive.busy;\n";
+    html << "                        button.textContent = drive.busy ? 'Busy...' : 'Remove';\n";
+    html << "                        button.className = drive.busy ? 'btn secondary' : 'btn danger';\n";
+    html << "                        status.textContent = drive.busy ? 'Busy' : 'Inserted';\n";
+    html << "                        status.style.color = drive.busy ? '#ff9900' : '#008000';\n";
+    html << "                    } else {\n";
+    html << "                        button.disabled = false;\n";
+    html << "                        button.textContent = 'Insert';\n";
+    html << "                        button.className = 'btn secondary';\n";
+    html << "                        status.textContent = '';\n";
+    html << "                        status.style.color = '#666';\n";
+    html << "                    }\n";
+    html << "                }\n";
+    html << "            })\n";
+    html << "            .catch(function(error) {\n";
+    html << "                showStatus('Error getting disk status: ' + error, true);\n";
+    html << "            });\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        function toggleDisk(slot, drive) {\n";
+    html << "            const button = document.getElementById('disk' + drive + 'Button');\n";
+    html << "            const isInsert = button.textContent === 'Insert';\n";
+    html << "            \n";
+    html << "            if (isInsert) {\n";
+    html << "                insertDisk(slot, drive);\n";
+    html << "            } else {\n";
+    html << "                removeDisk(slot, drive);\n";
+    html << "            }\n";
+    html << "        }\n";
+    html << "        \n";
     html << "        function insertDisk(slot, drive) {\n";
     html << "            const fileInput = document.getElementById('disk' + drive + 'File');\n";
     html << "            const filename = fileInput.value.trim();\n";
@@ -1081,6 +1175,7 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            const payload = JSON.stringify({ slot: slot, drive: drive, filename: filename });\n";
     html << "            const statusSpan = document.getElementById('disk' + drive + 'Status');\n";
     html << "            statusSpan.textContent = 'Inserting...';\n";
+    html << "            statusSpan.style.color = '#666';\n";
     html << "            \n";
     html << "            fetch('/api/disk-insert', {\n";
     html << "                method: 'POST',\n";
@@ -1091,29 +1186,26 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            .then(function(data) {\n";
     html << "                if (data.error) {\n";
     html << "                    showStatus('Error inserting disk: ' + data.error, true);\n";
-    html << "                    statusSpan.textContent = 'Failed';\n";
-    html << "                    statusSpan.style.color = '#ff0000';\n";
     html << "                } else {\n";
     html << "                    showStatus('Disk inserted successfully');\n";
-    html << "                    statusSpan.textContent = 'Inserted';\n";
-    html << "                    statusSpan.style.color = '#008000';\n";
     html << "                }\n";
+    html << "                updateDiskStatus(); // Refresh UI state\n";
     html << "            })\n";
     html << "            .catch(function(error) {\n";
     html << "                showStatus('Error inserting disk: ' + error, true);\n";
-    html << "                statusSpan.textContent = 'Failed';\n";
-    html << "                statusSpan.style.color = '#ff0000';\n";
+    html << "                updateDiskStatus(); // Refresh UI state\n";
     html << "            });\n";
     html << "        }\n";
     html << "        \n";
     html << "        function removeDisk(slot, drive) {\n";
-    html << "            if (!confirm('Are you sure you want to remove the disk from drive ' + drive + '?')) {\n";
+    html << "            if (!confirm('Are you sure you want to remove the disk from drive ' + (drive + 1) + '?')) {\n";
     html << "                return;\n";
     html << "            }\n";
     html << "            \n";
     html << "            const payload = JSON.stringify({ slot: slot, drive: drive });\n";
     html << "            const statusSpan = document.getElementById('disk' + drive + 'Status');\n";
     html << "            statusSpan.textContent = 'Removing...';\n";
+    html << "            statusSpan.style.color = '#666';\n";
     html << "            \n";
     html << "            fetch('/api/disk-remove', {\n";
     html << "                method: 'POST',\n";
@@ -1124,19 +1216,15 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            .then(function(data) {\n";
     html << "                if (data.error) {\n";
     html << "                    showStatus('Error removing disk: ' + data.error, true);\n";
-    html << "                    statusSpan.textContent = 'Failed';\n";
-    html << "                    statusSpan.style.color = '#ff0000';\n";
     html << "                } else {\n";
     html << "                    showStatus('Disk removed successfully');\n";
-    html << "                    statusSpan.textContent = '';\n";
-    html << "                    statusSpan.style.color = '#666';\n";
     html << "                    document.getElementById('disk' + drive + 'File').value = '';\n";
     html << "                }\n";
+    html << "                updateDiskStatus(); // Refresh UI state\n";
     html << "            })\n";
     html << "            .catch(function(error) {\n";
     html << "                showStatus('Error removing disk: ' + error, true);\n";
-    html << "                statusSpan.textContent = 'Failed';\n";
-    html << "                statusSpan.style.color = '#ff0000';\n";
+    html << "                updateDiskStatus(); // Refresh UI state\n";
     html << "            });\n";
     html << "        }\n";
     html << "        \n";
@@ -1155,14 +1243,36 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            }\n";
     html << "        }\n";
     html << "        \n";
+    html << "        // Function to update terminal visibility based on selected number of terminals\n";
+    html << "        function updateTerminalRows() {\n";
+    html << "            const numTerminals = parseInt(document.querySelector('input[name=\"numTerminals\"]:checked').value);\n";
+    html << "            \n";
+    html << "            // Hide all terminal rows first\n";
+    html << "            for (let i = 0; i < 4; i++) {\n";
+    html << "                document.getElementById('terminalRow' + i).style.display = 'none';\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            // Show only the selected number of terminals\n";
+    html << "            for (let i = 0; i < numTerminals; i++) {\n";
+    html << "                document.getElementById('terminalRow' + i).style.display = 'grid';\n";
+    html << "            }\n";
+    html << "        }\n";
+    html << "        \n";
     html << "        // Load configuration on page load\n";
     html << "        loadConfig();\n";
     html << "        \n";
     html << "        // Add event listener to number of drives dropdown\n";
     html << "        document.getElementById('numDrives').addEventListener('change', updateDriveSlots);\n";
     html << "        \n";
-    html << "        // Initial drive slots update\n";
+    html << "        // Add event listeners to number of terminals radio buttons\n";
+    html << "        document.querySelectorAll('input[name=\"numTerminals\"]').forEach(function(radio) {\n";
+    html << "            radio.addEventListener('change', updateTerminalRows);\n";
+    html << "        });\n";
+    html << "        \n";
+    html << "        // Initial updates\n";
     html << "        updateDriveSlots();\n";
+    html << "        updateTerminalRows();\n";
+    html << "        updateDiskStatus();\n";
     html << "    </script>\n";
     html << "</body>\n";
     html << "</html>\n";

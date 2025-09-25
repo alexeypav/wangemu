@@ -76,6 +76,7 @@ private:
     HttpResponse handlePostInternalRestart();
     HttpResponse handlePostDiskInsert(const std::string& body);
     HttpResponse handlePostDiskRemove(const std::string& body);
+    HttpResponse handleGetDiskStatus();
     HttpResponse handleGetRoot();
     HttpResponse serveStaticFile(const std::string& path);
     
