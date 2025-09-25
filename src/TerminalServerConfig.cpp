@@ -12,73 +12,6 @@
 // TerminalPortConfig Implementation
 // ============================================================================
 
-bool TerminalPortConfig::parseFromString(const std::string& spec)
-{
-    // Parse format: "/dev/ttyUSB0,19200,8,O,1[,xonxoff]"
-    std::istringstream ss(spec);
-    std::string token;
-    std::vector<std::string> parts;
-    
-    while (std::getline(ss, token, ',')) {
-        parts.push_back(token);
-    }
-    
-    if (parts.size() < 5) {
-        std::cerr << "Error: Terminal spec requires at least 5 parts: port,baud,data,parity,stop" << std::endl;
-        return false;
-    }
-    
-    // Parse port name
-    portName = parts[0];
-    
-    // Parse baud rate
-    baudRate = static_cast<uint32_t>(std::stoul(parts[1]));
-    
-    // Parse data bits
-    dataBits = static_cast<uint8_t>(std::stoul(parts[2]));
-    if (dataBits != 7 && dataBits != 8) {
-        std::cerr << "Error: Data bits must be 7 or 8" << std::endl;
-        return false;
-    }
-    
-    // Parse parity
-    if (parts[3] == "N" || parts[3] == "n") {
-        parity = NOPARITY;
-    } else if (parts[3] == "O" || parts[3] == "o") {
-        parity = ODDPARITY;
-    } else if (parts[3] == "E" || parts[3] == "e") {
-        parity = EVENPARITY;
-    } else {
-        std::cerr << "Error: Parity must be N, O, or E" << std::endl;
-        return false;
-    }
-    
-    // Parse stop bits
-    int stopBitsInt = std::stoi(parts[4]);
-    if (stopBitsInt == 1) {
-        stopBits = ONESTOPBIT;
-    } else if (stopBitsInt == 2) {
-        stopBits = TWOSTOPBITS;
-    } else {
-        std::cerr << "Error: Stop bits must be 1 or 2" << std::endl;
-        return false;
-    }
-    
-    // Parse optional flow control
-    if (parts.size() >= 6) {
-        if (parts[5] == "xonxoff" || parts[5] == "XONXOFF") {
-            swFlowControl = true;
-        } else if (parts[5] == "rtscts" || parts[5] == "RTSCTS") {
-            hwFlowControl = true;
-        } else if (parts[5] == "none" || parts[5] == "NONE") {
-            hwFlowControl = false;
-            swFlowControl = false;
-        }
-    }
-    
-    enabled = true;
-    return true;
-}
 
 SerialConfig TerminalPortConfig::toSerialConfig() const
 {
@@ -188,8 +121,6 @@ void TerminalServerConfig::loadFromHostConfig()
 
 bool TerminalServerConfig::parseCommandLine(int argc, char* argv[])
 {
-    bool terminalServerMode = false;
-    bool showStatus = false;
     m_cleanExit = false;  // Reset clean exit flag
     
     for (int i = 1; i < argc; i++) {
@@ -199,23 +130,6 @@ bool TerminalServerConfig::parseCommandLine(int argc, char* argv[])
             showHelp();
             m_cleanExit = true;
             return false;
-        } else if (arg == "--terminal-server") {
-            terminalServerMode = true;
-        } else if (arg == "--status") {
-            showStatus = true;
-        } else if (arg.find("--term") == 0) {
-            if (!parseTerminalArg(arg)) {
-                return false;
-            }
-        } else if (arg.find("--capture-dir=") == 0) {
-            captureDir = arg.substr(14);
-            captureEnabled = !captureDir.empty();
-        } else if (arg.find("--mxd-addr=") == 0) {
-            mxdIoAddr = std::stoi(arg.substr(11), nullptr, 0);
-        } else if (arg.find("--num-terms=") == 0) {
-            numTerminals = std::stoi(arg.substr(12));
-            if (numTerminals < 1) numTerminals = 1;
-            if (numTerminals > MAX_TERMINALS) numTerminals = MAX_TERMINALS;
         } else if (arg.find("--ini=") == 0) {
             iniPath = arg.substr(6);
         } else if (arg == "--web-config") {
@@ -226,71 +140,9 @@ bool TerminalServerConfig::parseCommandLine(int argc, char* argv[])
         }
     }
     
-    if (showStatus) {
-        std::cout << getStatusJson() << std::endl;
-        m_cleanExit = true;
-        return false;  // Exit after showing status
-    }
-    
-    // Always run in terminal server mode - that's what this binary does
-    (void)terminalServerMode;  // Suppress unused variable warning
-    
-    // If no terminals configured, use default terminal 0
-    bool hasEnabledTerminals = false;
-    for (int i = 0; i < MAX_TERMINALS; i++) {
-        if (terminals[i].enabled) {
-            hasEnabledTerminals = true;
-            break;
-        }
-    }
-    
-    if (!hasEnabledTerminals) {
-        std::cerr << "[INFO] No terminals explicitly configured, using default terminal 0" << std::endl;
-        terminals[0].enabled = true;
-        terminals[0].portName = "/dev/ttyUSB0";
-        terminals[0].baudRate = 19200;
-        terminals[0].dataBits = 8;
-        terminals[0].parity = ODDPARITY;
-        terminals[0].stopBits = ONESTOPBIT;
-        terminals[0].swFlowControl = true;
-        terminals[0].hwFlowControl = false;
-    }
-    
     return true;
 }
 
-bool TerminalServerConfig::parseTerminalArg(const std::string& arg)
-{
-    // Parse --termN=spec format
-    size_t eqPos = arg.find('=');
-    if (eqPos == std::string::npos) {
-        std::cerr << "Error: Terminal argument missing '=': " << arg << std::endl;
-        return false;
-    }
-    
-    std::string termPart = arg.substr(0, eqPos);
-    std::string spec = arg.substr(eqPos + 1);
-    
-    // Extract terminal number
-    if (termPart.length() < 7 || termPart.substr(0, 6) != "--term") {
-        std::cerr << "Error: Invalid terminal argument: " << arg << std::endl;
-        return false;
-    }
-    
-    int termNum = std::stoi(termPart.substr(6));
-    if (termNum < 0 || termNum >= MAX_TERMINALS) {
-        std::cerr << "Error: Terminal number out of range (0-" << (MAX_TERMINALS-1) << "): " << termNum << std::endl;
-        return false;
-    }
-    
-    // Parse the specification
-    if (!terminals[termNum].parseFromString(spec)) {
-        std::cerr << "Error: Failed to parse terminal " << termNum << " specification: " << spec << std::endl;
-        return false;
-    }
-    
-    return true;
-}
 
 bool TerminalServerConfig::validate() const
 {
@@ -337,36 +189,6 @@ void TerminalServerConfig::printSummary() const
     }
 }
 
-std::string TerminalServerConfig::getStatusJson() const
-{
-    std::ostringstream json;
-    json << "{" << std::endl;
-    json << "  \"mxd_addr\":\"0x" << std::hex << mxdIoAddr << std::dec << "\"," << std::endl;
-    json << "  \"num_terms\":" << numTerminals << "," << std::endl;
-    json << "  \"capture_enabled\":" << (captureEnabled ? "true" : "false") << "," << std::endl;
-    if (captureEnabled) {
-        json << "  \"capture_dir\":\"" << captureDir << "\"," << std::endl;
-    }
-    json << "  \"terms\":[" << std::endl;
-    
-    for (int i = 0; i < MAX_TERMINALS; i++) {
-        if (i > 0) json << "," << std::endl;
-        json << "    {\"id\":" << i << ",";
-        json << "\"enabled\":" << (terminals[i].enabled ? "true" : "false");
-        if (terminals[i].enabled) {
-            json << ",\"port\":\"" << terminals[i].portName << "\"";
-            json << ",\"baud\":" << terminals[i].baudRate;
-            json << ",\"parity\":\"" << (terminals[i].parity == ODDPARITY ? "O" : 
-                                        (terminals[i].parity == EVENPARITY ? "E" : "N")) << "\"";
-            json << ",\"xonxoff\":" << (terminals[i].swFlowControl ? "true" : "false");
-        }
-        json << "}";
-    }
-    
-    json << std::endl << "  ]" << std::endl;
-    json << "}" << std::endl;
-    return json.str();
-}
 
 void TerminalServerConfig::showHelp() const
 {
@@ -375,30 +197,20 @@ void TerminalServerConfig::showHelp() const
     std::cout << "Usage: wangemu-terminal-server [options]" << std::endl;
     std::cout << std::endl;
     std::cout << "Options:" << std::endl;
-    std::cout << "  --terminal-server          (optional, always enabled by default)" << std::endl;
-    std::cout << "  --termN=PORT,BAUD,DATA,PARITY,STOP[,FLOW]" << std::endl;
-    std::cout << "                             Configure terminal N (0-3)" << std::endl;
-    std::cout << "                             PORT: /dev/ttyUSB0, /dev/ttyACM0, etc." << std::endl;
-    std::cout << "                             BAUD: 300, 1200, 2400, 4800, 9600, 19200, etc." << std::endl;
-    std::cout << "                             DATA: 7 or 8" << std::endl;
-    std::cout << "                             PARITY: N (none), O (odd), E (even)" << std::endl;
-    std::cout << "                             STOP: 1 or 2" << std::endl;
-    std::cout << "                             FLOW: none, xonxoff, rtscts (optional)" << std::endl;
-    std::cout << "  --mxd-addr=ADDR            MXD I/O address (default: 0x00)" << std::endl;
-    std::cout << "  --num-terms=N              Number of terminals (1-4, default: 1)" << std::endl;
-    std::cout << "  --capture-dir=DIR          Directory for capture files" << std::endl;
-    std::cout << "  --ini=PATH                 Load configuration from INI file" << std::endl;
+    std::cout << "  --ini=PATH                 Load configuration from INI file (default: wangemu.ini)" << std::endl;
     std::cout << "  --web-config               Enable web configuration interface" << std::endl;
     std::cout << "  --web-port=PORT            Web server port (default: 8080, enables web interface)" << std::endl;
-    std::cout << "  --status                   Print status JSON and exit" << std::endl;
     std::cout << "  --help, -h                 Show this help message" << std::endl;
     std::cout << std::endl;
-    std::cout << "Examples:" << std::endl;
-    std::cout << "  # Single terminal on USB serial adapter" << std::endl;
-    std::cout << "  wangemu-terminal-server --term0=/dev/ttyUSB0,19200,8,O,1,xonxoff" << std::endl;
+    std::cout << "Configuration:" << std::endl;
+    std::cout << "  All system and terminal settings are configured via:" << std::endl;
+    std::cout << "  1. INI file (wangemu.ini by default)" << std::endl;
+    std::cout << "  2. Web interface (--web-config)" << std::endl;
     std::cout << std::endl;
-    std::cout << "  # Multiple terminals" << std::endl;
-    std::cout << "  wangemu-terminal-server --num-terms=2 \\" << std::endl;
-    std::cout << "    --term0=/dev/ttyUSB0,19200,8,O,1,xonxoff \\" << std::endl;
-    std::cout << "    --term1=/dev/ttyUSB1,19200,8,O,1,xonxoff" << std::endl;
+    std::cout << "Examples:" << std::endl;
+    std::cout << "  # Start with web configuration interface" << std::endl;
+    std::cout << "  wangemu-terminal-server --web-config" << std::endl;
+    std::cout << std::endl;
+    std::cout << "  # Use custom INI file" << std::endl;
+    std::cout << "  wangemu-terminal-server --ini=/path/to/custom.ini" << std::endl;
 }

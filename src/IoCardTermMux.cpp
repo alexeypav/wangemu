@@ -170,7 +170,7 @@ IoCardTermMux::IoCardTermMux(std::shared_ptr<Scheduler> scheduler,
                        n, m_cfg.getTerminalComPort(n).c_str(), m_cfg.getTerminalBaudRate(n));
                 continue;  // Skip GUI terminal creation
             } else {
-                dbglog("IoCardTermMux: Failed to open COM port %s for terminal %d, using GUI instead\n",
+                dbglog("IoCardTermMux: Failed to open COM port %s for terminal %d, terminal available for session connection\n",
                        m_cfg.getTerminalComPort(n).c_str(), n);
                 // Fall through to GUI terminal creation
             }

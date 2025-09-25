@@ -29,11 +29,6 @@ struct TerminalPortConfig {
         enabled(false)
     {}
     
-    /**
-     * Parse a CLI terminal specification string
-     * Format: "/dev/ttyUSB0,19200,8,O,1[,xonxoff]"
-     */
-    bool parseFromString(const std::string& spec);
     
     /**
      * Convert to SerialConfig for SerialPort
@@ -108,17 +103,7 @@ public:
 private:
     bool m_cleanExit = false;  // Track clean exits for help/status
     
-    /**
-     * Get status as JSON string for --status command
-     */
-    std::string getStatusJson() const;
-
 private:
-    /**
-     * Parse a single terminal specification from command line
-     * Format: --termN=/dev/ttyUSBk,baud,data,parity,stop[,xonxoff]
-     */
-    bool parseTerminalArg(const std::string& arg);
     
     /**
      * Show help message

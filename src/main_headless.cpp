@@ -203,9 +203,22 @@ int main(int argc, char* argv[]) {
         // Create and configure terminal sessions
         sessions.resize(config.numTerminals);
         
+        // Debug: Print terminal configuration
+        std::cerr << "[DEBUG] Terminal server configuration:\n";
         for (int i = 0; i < config.numTerminals; i++) {
+            std::cerr << "[DEBUG]   Terminal " << i << ": port='" << config.terminals[i].portName 
+                      << "' enabled=" << (config.terminals[i].enabled ? "true" : "false") << "\n";
+        }
+        
+        for (int i = 0; i < config.numTerminals; i++) {
+            // Skip if terminal has no port configured
+            if (config.terminals[i].portName.empty()) {
+                std::cerr << "[INFO] Terminal " << i << " has no port configured, skipping\n";
+                continue;
+            }
+            
             if (!config.terminals[i].enabled) {
-                std::cerr << "[INFO] Terminal " << i << " disabled, skipping\n";
+                std::cerr << "[INFO] Terminal " << i << " disabled in configuration, skipping\n";
                 continue;
             }
             
@@ -215,18 +228,9 @@ int main(int argc, char* argv[]) {
             // Check if serial device exists before attempting to open
             const std::string& portName = config.terminals[i].portName;
             if (access(portName.c_str(), F_OK) != 0) {
-                std::cerr << "[ERROR] Serial device " << portName << " does not exist.\n";
-                std::cerr << "[ERROR] Please check:\n";
-                std::cerr << "[ERROR]   - USB-to-serial adapter is connected\n";
-                std::cerr << "[ERROR]   - Device permissions (try: sudo usermod -a -G dialout $USER)\n";
-                std::cerr << "[ERROR]   - Available devices: ls /dev/ttyUSB* /dev/ttyACM*\n";
-                std::cerr << "[ERROR] Terminal server cannot start without valid serial devices.\n";
-                // Clean up what we've initialized so far
-                if (system2200_initialized) {
-                    system2200::cleanup();
-                }
-                host::terminate();
-                return 1;
+                std::cerr << "[WARN] Serial device " << portName << " does not exist, terminal " << i << " will be available for later connection\n";
+                std::cerr << "[INFO] Check: USB-to-serial adapter connected, permissions (sudo usermod -a -G dialout $USER)\n";
+                continue;  // Skip this terminal, don't exit
             }
             
             // Create serial port using the shared scheduler from termMux
@@ -236,18 +240,9 @@ int main(int argc, char* argv[]) {
             // Open serial port
             SerialConfig serialConfig = config.terminals[i].toSerialConfig();
             if (!serialPort->open(serialConfig)) {
-                std::cerr << "[ERROR] Failed to open " << portName << " for terminal " << i << "\n";
-                std::cerr << "[ERROR] This could indicate:\n";
-                std::cerr << "[ERROR]   - Device is already in use by another process\n";
-                std::cerr << "[ERROR]   - Insufficient permissions (try: sudo usermod -a -G dialout $USER)\n";
-                std::cerr << "[ERROR]   - Hardware malfunction or incompatible USB-to-serial adapter\n";
-                std::cerr << "[ERROR] Terminal server cannot continue without functional serial port.\n";
-                // Clean up what we've initialized so far
-                if (system2200_initialized) {
-                    system2200::cleanup();
-                }
-                host::terminate();
-                return 1;
+                std::cerr << "[WARN] Failed to open " << portName << " for terminal " << i << ", will retry later\n";
+                std::cerr << "[INFO] Possible causes: device in use, permissions, or hardware issue\n";
+                continue;  // Skip this terminal, don't exit
             }
             
             // Set up capture callback if enabled
@@ -288,6 +283,7 @@ int main(int argc, char* argv[]) {
         
         // Main emulation loop
         auto lastStatsTime = std::chrono::steady_clock::now();
+        auto lastRetryTime = std::chrono::steady_clock::now();
         while (running) {
             // Check for status dump request
             if (dumpStatus) {
@@ -344,6 +340,51 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 lastStatsTime = now;
+            }
+            
+            // Try to reconnect failed serial ports every 30 seconds
+            auto retryElapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastRetryTime);
+            if (retryElapsed.count() >= 30) {
+                for (int i = 0; i < config.numTerminals; i++) {
+                    if (sessions[i]) {
+                        continue;  // Skip already connected terminals
+                    }
+                    
+                    // Skip if terminal has no port configured
+                    if (config.terminals[i].portName.empty()) {
+                        continue;
+                    }
+                    
+                    const std::string& portName = config.terminals[i].portName;
+                    
+                    // Check if device now exists
+                    if (access(portName.c_str(), F_OK) != 0) {
+                        continue;  // Still doesn't exist
+                    }
+                    
+                    std::cerr << "[INFO] Attempting to reconnect terminal " << i << " to " << portName << "\n";
+                    
+                    // Try to create and open serial port
+                    auto scheduler = termMux->getScheduler();
+                    auto serialPort = std::make_shared<SerialPort>(scheduler);
+                    SerialConfig serialConfig = config.terminals[i].toSerialConfig();
+                    
+                    if (serialPort->open(serialConfig)) {
+                        // Set up capture callback if enabled
+                        if (config.captureEnabled && !config.captureDir.empty()) {
+                            auto captureCallback = createCaptureCallback(i, config.captureDir);
+                            serialPort->setCaptureCallback(captureCallback);
+                        }
+                        
+                        // Create session and connect to MXD
+                        auto termToMxdCallback = createTermToMxdCallback(i);
+                        sessions[i] = std::make_shared<SerialTermSession>(serialPort, termToMxdCallback);
+                        termMux->setSession(i, sessions[i]);
+                        
+                        std::cerr << "[INFO] Terminal " << i << " reconnected successfully to " << portName << "\n";
+                    }
+                }
+                lastRetryTime = now;
             }
             
             // Small sleep to prevent 100% CPU usage

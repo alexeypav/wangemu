@@ -259,6 +259,22 @@ screen /tmp/vterm1 19200,cs8,parenb,parodd,-cstopb,-crtscts,ixon,ixoff
 
 ---
 
+
+## Null modem wiring
+
+## 9-Wire Map (DB25 ↔ DB9)
+
+| DB9 (PC/Emu) | DB25 (Wang 2336DW) | Signal     | Notes                                     |
+|--------------|--------------------|------------|-------------------------------------------|
+| 1            | 20                 | DTR → DCD  | Tie Terminal Ready to Host Carrier Detect |
+| 2            | 2                  | TXD → RXD  | Terminal TX → Host RX                     |
+| 3            | 3                  | RXD ← TXD  | Terminal RX ← Host TX                     |
+| 4            | 6, 8               | DSR/DCD ← DTR | Host Ready & Carrier Detect → Terminal  |
+| 5            | 7                  | GND        | Common ground                             |
+| 6            | 20                 | DTR → DSR  | Terminal Ready → Host                     |
+| 7            | 5                  | CTS ↔ RTS  | Crossed handshaking                       |
+| 8            | 4                  | RTS ↔ CTS  | Crossed handshaking                       |
+
 ## Related Documentation
 
 - [Main README](README.md) - GUI emulator build and usage

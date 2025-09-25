@@ -4,7 +4,7 @@
 
 cd "$(dirname "$0")"
 
-./wangemu-terminal-server --web-config &
+./wangemu-terminal-server-aarch64 --web-config &
 
 echo "Wang 2200 Terminal Server started with web config (PID: $!)"
-echo "To stop, use: pkill wangemu-terminal-server"
+echo "To stop, use: pkill wangemu-terminal-server-aarch64"

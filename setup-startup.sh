@@ -22,16 +22,8 @@ fi
 # Create or modify rc.local to include our startup script
 echo "Adding startup command to /etc/rc.local"
 
-# Remove our entry if it already exists
-sudo sed -i '/start-wangemu\.sh/d' /etc/rc.local 2>/dev/null || true
-
-# Add our startup command before the final 'exit 0' line
-sudo sed -i "/^exit 0/i\\
-# Start Wang 2200 Terminal Server\\
-$STARTUP_SCRIPT" /etc/rc.local
-
-# If rc.local doesn't exist or doesn't have exit 0, create it
-if ! grep -q "exit 0" /etc/rc.local 2>/dev/null; then
+# Create rc.local if it doesn't exist
+if [ ! -f /etc/rc.local ]; then
     echo "Creating new /etc/rc.local"
     sudo tee /etc/rc.local > /dev/null << EOF
 #!/bin/sh -e
@@ -45,6 +37,14 @@ $STARTUP_SCRIPT
 
 exit 0
 EOF
+else
+    # Remove our entry if it already exists
+    sudo sed -i '/start-wangemu\.sh/d' /etc/rc.local 2>/dev/null || true
+    
+    # Add our startup command before the final 'exit 0' line
+    sudo sed -i "/^exit 0/i\\
+# Start Wang 2200 Terminal Server\\
+$STARTUP_SCRIPT" /etc/rc.local
 fi
 
 # Make rc.local executable
