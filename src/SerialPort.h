@@ -9,6 +9,22 @@ class Timer;
 
 #ifdef _WIN32
 #include <windows.h>
+// Undefine Windows macros that conflict with our enums
+#ifdef NOPARITY
+#undef NOPARITY
+#endif
+#ifdef ODDPARITY
+#undef ODDPARITY
+#endif
+#ifdef EVENPARITY
+#undef EVENPARITY
+#endif
+#ifdef ONESTOPBIT
+#undef ONESTOPBIT
+#endif
+#ifdef TWOSTOPBITS
+#undef TWOSTOPBITS
+#endif
 #endif
 
 #include <string>
