@@ -67,10 +67,12 @@ private:
     HttpResponse handleGetConfig();
     HttpResponse handlePostConfig(const std::string& body);
     HttpResponse handlePostShutdown();
+    HttpResponse handlePostRestart();
     HttpResponse handlePostReloadConfig();
     HttpResponse handlePostInternalRestart();
     HttpResponse handlePostDiskInsert(const std::string& body);
     HttpResponse handlePostDiskRemove(const std::string& body);
+    HttpResponse handlePostDiskSpeedToggle(const std::string& body);
     HttpResponse handleGetDiskStatus();
     HttpResponse handleGetRoot();
     HttpResponse serveStaticFile(const std::string& path);

@@ -140,6 +140,8 @@ void WebConfigServer::handleRequest(int clientSocket, const HttpRequest& request
             response = handlePostConfig(request.body);
         } else if (request.path == "/api/shutdown") {
             response = handlePostShutdown();
+        } else if (request.path == "/api/restart") {
+            response = handlePostRestart();
         } else if (request.path == "/api/reload") {
             response = handlePostReloadConfig();
         } else if (request.path == "/api/internal-restart") {
@@ -148,6 +150,8 @@ void WebConfigServer::handleRequest(int clientSocket, const HttpRequest& request
             response = handlePostDiskInsert(request.body);
         } else if (request.path == "/api/disk-remove") {
             response = handlePostDiskRemove(request.body);
+        } else if (request.path == "/api/disk-speed-toggle") {
+            response = handlePostDiskSpeedToggle(request.body);
         } else {
             response.status = 404;
             response.body = "Not Found";
@@ -351,6 +355,37 @@ WebConfigServer::HttpResponse WebConfigServer::handlePostShutdown() {
     return response;
 }
 
+WebConfigServer::HttpResponse WebConfigServer::handlePostRestart() {
+    HttpResponse response;
+    response.headers["Content-Type"] = "application/json";
+    response.headers["Access-Control-Allow-Origin"] = "*";
+    
+    // Execute system restart in a separate thread after sending response
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        
+        std::cout << "[INFO] System restart requested from web interface\n";
+        std::cout << "[INFO] Executing: sudo reboot\n";
+        
+        // Try different restart commands based on system
+        int result = system("sudo reboot");
+        if (result != 0) {
+            // Fallback to systemctl if reboot command fails
+            result = system("sudo systemctl reboot");
+            if (result != 0) {
+                // Last resort - try init
+                result = system("sudo init 6");
+                if (result != 0) {
+                    std::cerr << "[ERROR] Failed to restart system - all restart commands failed\n";
+                }
+            }
+        }
+    }).detach();
+    
+    response.body = "{\"status\":\"System restart initiated - server will reboot in a few seconds\"}";
+    return response;
+}
+
 WebConfigServer::HttpResponse WebConfigServer::handlePostDiskInsert(const std::string& body) {
     HttpResponse response;
     response.headers["Content-Type"] = "application/json";
@@ -544,6 +579,57 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetDiskStatus() {
     return response;
 }
 
+WebConfigServer::HttpResponse WebConfigServer::handlePostDiskSpeedToggle(const std::string& body) {
+    HttpResponse response;
+    response.headers["Content-Type"] = "application/json";
+    response.headers["Access-Control-Allow-Origin"] = "*";
+    
+    try {
+        // Parse JSON request: {"realtime": true/false}
+        std::cout << "[INFO] Disk speed toggle request: " << body << "\n";
+        
+        bool realtime = true; // default to realtime mode
+        
+        // Simple JSON parsing for realtime flag
+        size_t realtimePos = body.find("\"realtime\":");
+        if (realtimePos != std::string::npos) {
+            realtimePos += 11; // Skip "realtime":
+            while (realtimePos < body.size() && (body[realtimePos] == ' ' || body[realtimePos] == '\t')) realtimePos++;
+            
+            if (realtimePos + 4 < body.size() && body.substr(realtimePos, 4) == "true") {
+                realtime = true;
+            } else if (realtimePos + 5 < body.size() && body.substr(realtimePos, 5) == "false") {
+                realtime = false;
+            }
+        }
+        
+        std::cout << "[INFO] Setting disk speed to: " << (realtime ? "realtime" : "unregulated") << "\n";
+        
+        // Apply the setting immediately (like the original GUI does)
+        system2200::setDiskRealtime(realtime);
+        
+        // Also update the host config so it persists across restarts
+        // This mimics what the original GUI does when saving configuration
+        std::string subgroup("misc");
+        host::configWriteBool(subgroup, "disk_realtime", realtime);
+        
+        response.body = "{\"status\":\"disk speed setting applied immediately\",\"realtime\":" + 
+                        std::string(realtime ? "true" : "false") + "}";
+        std::cout << "[INFO] Disk speed setting applied successfully\n";
+        
+    } catch (const std::exception& e) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to set disk speed: " + std::string(e.what()) + "\"}";
+        std::cerr << "[ERROR] Failed to set disk speed: " << e.what() << "\n";
+    } catch (...) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to set disk speed: unknown error\"}";
+        std::cerr << "[ERROR] Failed to set disk speed: unknown error\n";
+    }
+    
+    return response;
+}
+
 WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     HttpResponse response;
     response.headers["Content-Type"] = "text/html";
@@ -585,6 +671,14 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "        .status.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }\n";
     html << "        .row { display: flex; gap: 20px; align-items: center; margin-bottom: 15px; }\n";
     html << "        .checkbox-group { display: flex; align-items: center; gap: 8px; }\n";
+    html << "        .toggle-switch { position: relative; display: inline-block; width: 30px; height: 17px; }\n";
+    html << "        .toggle-switch input { opacity: 0; width: 0; height: 0; }\n";
+    html << "        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccccccff; border-radius: 17px; transition: .4s; }\n";
+    html << "        .slider:before { position: absolute; content: \"\"; height: 13px; width: 13px; left: 2px; bottom: 2px; background-color: white; border-radius: 50%; transition: .4s; }\n";
+    html << "        input:checked + .slider { background-color: #ccccccff; }\n";
+    html << "        input:checked + .slider:before { transform: translateX(13px); }\n";
+    html << "        .slider:hover { opacity: 0.8; }\n";
+    html << "        .toggle-label { margin-left: 10px; font-weight: normal; }\n";
     html << "        h1 { text-align: center; color: #333; margin-bottom: 30px; }\n";
     html << "        .advanced-toggle { margin-top: 20px; text-align: center; }\n";
     html << "        .advanced-config { display: none; margin-top: 20px; }\n";
@@ -701,15 +795,18 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            <div class=\"panel-header\">Disk Controller Configuration</div>\n";
     html << "            <div class=\"panel-body\">\n";
     html << "                <div class=\"row\">\n";
-    html << "                    <div class=\"checkbox-group\">\n";
-    html << "                        <input type=\"checkbox\" id=\"diskRealtime\" checked> <label for=\"diskRealtime\">Realtime Disk Speed</label>\n";
+    html << "                    <div class=\"form-group\">\n";
+    html << "                        <label>6541 Disk Controller (Disk 1/2 at /310, Disk 3/4 at /350)</label>\n";
     html << "                    </div>\n";
     html << "                </div>\n";
     html << "                \n";
     html << "                <div class=\"row\">\n";
-    html << "                    <div class=\"form-group\">\n";
-    html << "                        <label>6541 Disk Controller at 0x310</label>\n";
-    html << "                    </div>\n";
+    html << "                    <span>Unregulated Speed</span>\n";
+    html << "                    <label class=\"toggle-switch\">\n";
+    html << "                        <input type=\"checkbox\" id=\"diskRealtime\" checked>\n";
+    html << "                        <span class=\"slider\"></span>\n";
+    html << "                    </label>\n";
+    html << "                    <span>Realtime Disk Speed</span>\n";
     html << "                </div>\n";
     html << "                \n";
     html << "                <div class=\"row\">\n";
@@ -775,10 +872,11 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "        </div>\n";
     html << "        \n";
     html << "        <div class=\"buttons\">\n";
-    html << "            <button class=\"btn\" onclick=\"saveAndApplyConfig()\">OK, Apply &amp; Restart</button>\n";
+    html << "            <button class=\"btn\" onclick=\"saveAndApplyConfig()\">Apply and Reset</button>\n";
     html << "            <button class=\"btn secondary\" onclick=\"saveConfig()\">Save Only</button>\n";
     html << "            <button class=\"btn secondary\" onclick=\"loadConfig()\">Revert</button>\n";
-    html << "            <button class=\"btn danger\" onclick=\"shutdownSystem()\">Shutdown System</button>\n";
+    html << "            <button class=\"btn danger\" onclick=\"restartSystem()\">Restart Host System</button>\n";
+    html << "            <button class=\"btn danger\" onclick=\"shutdownSystem()\">Shutdown Host System</button>\n";
     html << "        </div>\n";
     html << "        \n";
     html << "        <div id=\"status\"></div>\n";
@@ -880,8 +978,8 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            }\n";
     html << "            \n";
     html << "            ini += '[wangemu/config-0/misc]\\n';\n";
-    html << "            ini += 'disk_realtime=' + (document.getElementById('diskRealtime').checked ? 'true' : 'false') + '\\n';\n";
-    html << "            ini += 'warnio=' + (document.getElementById('warnInvalidIo').checked ? 'true' : 'false') + '\\n';\n";
+    html << "            ini += 'disk_realtime=' + (document.getElementById('diskRealtime').checked ? '1' : '0') + '\\n';\n";
+    html << "            ini += 'warnio=' + (document.getElementById('warnInvalidIo').checked ? '1' : '0') + '\\n';\n";
     html << "            \n";
     html << "            return ini;\n";
     html << "        }\n";
@@ -897,8 +995,11 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            \n";
     html << "            // Misc settings\n";
     html << "            if (config['wangemu/config-0/misc']) {\n";
-    html << "                document.getElementById('warnInvalidIo').checked = config['wangemu/config-0/misc']['warnio'] === 'true';\n";
-    html << "                document.getElementById('diskRealtime').checked = config['wangemu/config-0/misc']['disk_realtime'] !== 'false'; // default true\n";
+    html << "                const warnIo = config['wangemu/config-0/misc']['warnio'];\n";
+    html << "                document.getElementById('warnInvalidIo').checked = (warnIo === 'true' || warnIo === '1');\n";
+    html << "                const diskRealtime = config['wangemu/config-0/misc']['disk_realtime'];\n";
+    html << "                const isRealtime = (diskRealtime === 'true' || diskRealtime === '1' || diskRealtime === undefined); // default true\n";
+    html << "                document.getElementById('diskRealtime').checked = isRealtime;\n";
     html << "            }\n";
     html << "            \n";
     html << "            // Terminal settings\n";
@@ -1066,6 +1167,25 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                });\n";
     html << "        }\n";
     html << "        \n";
+    html << "        function restartSystem() {\n";
+    html << "            if (!confirm('Are you sure you want to restart the operating system? This will reboot the entire system.')) {\n";
+    html << "                return;\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            fetch('/api/restart', { method: 'POST' })\n";
+    html << "                .then(function(response) { return response.json(); })\n";
+    html << "                .then(function(data) {\n";
+    html << "                    if (data.error) {\n";
+    html << "                        showStatus('Error: ' + data.error, true);\n";
+    html << "                    } else {\n";
+    html << "                        showStatus('System is restarting - please wait...');\n";
+    html << "                    }\n";
+    html << "                })\n";
+    html << "                .catch(function(error) {\n";
+    html << "                    showStatus('Error restarting system: ' + error, true);\n";
+    html << "                });\n";
+    html << "        }\n";
+    html << "        \n";
     html << "        function shutdownSystem() {\n";
     html << "            if (!confirm('Are you sure you want to shutdown the operating system? This will power off the entire system.')) {\n";
     html << "                return;\n";
@@ -1214,6 +1334,35 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            });\n";
     html << "        }\n";
     html << "        \n";
+    html << "        // Toggle disk speed immediately (like original GUI)\n";
+    html << "        function toggleDiskSpeed() {\n";
+    html << "            const checkbox = document.getElementById('diskRealtime');\n";
+    html << "            const realtime = checkbox.checked;\n";
+    html << "            \n";
+    html << "            const payload = JSON.stringify({ realtime: realtime });\n";
+    html << "            \n";
+    html << "            fetch('/api/disk-speed-toggle', {\n";
+    html << "                method: 'POST',\n";
+    html << "                headers: { 'Content-Type': 'application/json' },\n";
+    html << "                body: payload\n";
+    html << "            })\n";
+    html << "            .then(function(response) { return response.json(); })\n";
+    html << "            .then(function(data) {\n";
+    html << "                if (data.error) {\n";
+    html << "                    showStatus('Error setting disk speed: ' + data.error, true);\n";
+    html << "                    // Revert checkbox if there was an error\n";
+    html << "                    checkbox.checked = !realtime;\n";
+    html << "                } else {\n";
+    html << "                    showStatus('Disk speed set to ' + (realtime ? 'realtime' : 'unregulated') + ' mode');\n";
+    html << "                }\n";
+    html << "            })\n";
+    html << "            .catch(function(error) {\n";
+    html << "                showStatus('Error setting disk speed: ' + error, true);\n";
+    html << "                // Revert checkbox if there was an error\n";
+    html << "                checkbox.checked = !realtime;\n";
+    html << "            });\n";
+    html << "        }\n";
+    html << "        \n";
     html << "        // Function to update RAM options based on CPU type (matching GUI behavior)\n";
     html << "        function updateRamOptions(cpuType, selectedRam) {\n";
     html << "            const ramSelect = document.getElementById('ram');\n";
@@ -1298,6 +1447,9 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "            const currentRam = document.getElementById('ram').value;\n";
     html << "            updateRamOptions(selectedCpu, currentRam);\n";
     html << "        });\n";
+    html << "        \n";
+    html << "        // Add event listener to disk realtime checkbox for immediate toggle\n";
+    html << "        document.getElementById('diskRealtime').addEventListener('change', toggleDiskSpeed);\n";
     html << "        \n";
     html << "        // Initial updates\n";
     html << "        updateDriveSlots();\n";
