@@ -19,6 +19,7 @@ jobs:
     
     - name: Build ARM64 terminal server
       run: |
+        make -f makefile.terminal-server-aarch64 clean
         make -f makefile.terminal-server-aarch64 opt
     
     - name: Create release package
@@ -28,6 +29,9 @@ jobs:
         cp setup-startup.sh release-package/
         cp start-wangemu.sh release-package/
         chmod +x release-package/*
+        cd release-package
+        zip -r ../wangemu-raspberry-pi-v${GITHUB_REF#refs/tags/}.zip *
+        cd ..
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -36,35 +40,13 @@ jobs:
         path: release-package/
         retention-days: 90
     
-    - name: Upload ARM binary to release
+    - name: Upload release package to release
       if: github.event_name == 'release'
       uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./wangemu-terminal-server-aarch64
-        asset_name: wangemu-terminal-server-aarch64
-        asset_content_type: application/octet-stream
-    
-    - name: Upload setup script to release
-      if: github.event_name == 'release'
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./setup-startup.sh
-        asset_name: setup-startup.sh
-        asset_content_type: text/plain
-    
-    - name: Upload start script to release
-      if: github.event_name == 'release'
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./start-wangemu.sh
-        asset_name: start-wangemu.sh
-        asset_content_type: text/plain
+        asset_path: ./wangemu-raspberry-pi-v${{ github.ref_name }}.zip
+        asset_name: wangemu-raspberry-pi-${{ github.ref_name }}.zip
+        asset_content_type: application/zip

@@ -94,7 +94,7 @@ CXXFLAGS    := -std=c++14 -fno-common -pthread -DHEADLESS_BUILD
 CXXWARNINGS := -Wall -Wextra -Wshadow -Wformat -Wundef -Wstrict-aliasing=1 \
                -Wno-deprecated-declarations \
                -Wno-ctor-dtor-privacy -Woverloaded-virtual
-LDFLAGS     := -pthread -static-libgcc -static-libstdc++
+LDFLAGS     := -pthread -static
 
 # Create the executable
 ./wangemu-terminal-server-aarch64: $(OBJFILES)
