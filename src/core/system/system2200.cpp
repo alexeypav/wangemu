@@ -550,6 +550,7 @@ system2200::setConfig(const SysCfgState &new_cfg)
             assert(false);
             cpu_type = Cpu2200::CPUTYPE_2200T;
             // fall through in non-debug build if config type is invalid
+            [[fallthrough]];
         case Cpu2200::CPUTYPE_2200B:
         case Cpu2200::CPUTYPE_2200T:
             cpu = std::make_shared<Cpu2200t>(scheduler, ram_size, cpu_type);

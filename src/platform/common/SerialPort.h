@@ -166,8 +166,8 @@ private:
     // Transmit queue and timing (model serial UART delays)
     std::queue<uint8> m_txQueue;
     mutable std::recursive_mutex m_txMutex;  // mutable for const methods
-    std::shared_ptr<Timer> m_txTimer;
     bool m_txBusy;
+    std::shared_ptr<Timer> m_txTimer;
 
     // Configuration
     SerialConfig m_config;

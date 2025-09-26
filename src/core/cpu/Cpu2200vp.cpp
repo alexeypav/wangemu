@@ -338,6 +338,7 @@ Cpu2200vp::writeUcode(uint16 addr, uint32 uop, bool force) noexcept
                 if (((uop >> 14) & 3) >= 2) {
                     m_ucode[addr].ucode |= FETCH_CY;    // clear or set
                 }
+                [[fallthrough]];
             case 0x07:  // M: multiply
                 illegal = (uop & 0x010000) != 0x000000;
                 x_field = (uop >> 17) & 1;
