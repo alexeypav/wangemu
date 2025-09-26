@@ -11,7 +11,7 @@ For the GUI/Original version; added a Terminal mode (select the 2336DW in the CP
 * Plug in your serial adapters and connect terminal/s, up to 4 should work
 * Run the executable `./wangemu-terminal-server-aarch64 --web-config`
 * Initial config is 1 terminal and using /dev/ttyUSB0 - if you have a terminal connected there it should work already
-* Configure the setup via web - http://<ip or hostname of the Pi>:8080 - click apply and reset
+* Configure the setup via web - http://(ip or hostname of the Pi):8080 - click apply and reset
 * Settings should apply, any extra terminals should come up
 * For information on configuration, check the original documentation [emu.html](http://www.wang2200.org/emu.html)
 * wangemu.ini manual configuration should work the same, you will need to stop the emulator first otherwise it'll overwrite the .ini file on exit
