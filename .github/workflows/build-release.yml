@@ -1,0 +1,51 @@
+name: Build Release
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+
+jobs:
+  build-terminal-server:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install build dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y build-essential
+        if [ "${{ matrix.arch }}" = "aarch64" ]; then
+          sudo apt install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+        fi
+    
+    - name: Build terminal server
+      run: |
+        if [ "${{ matrix.arch }}" = "x86_64" ]; then
+          make -f makefile.terminal-server opt
+          mv wangemu-terminal-server wangemu-terminal-server-x86_64
+        else
+          make -f makefile.terminal-server-aarch64 opt
+        fi
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: wangemu-terminal-server-${{ matrix.arch }}
+        path: wangemu-terminal-server-*
+        retention-days: 90
+    
+    - name: Upload to release
+      if: github.event_name == 'release'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./wangemu-terminal-server-${{ matrix.arch }}
+        asset_name: wangemu-terminal-server-${{ matrix.arch }}
+        asset_content_type: application/octet-stream
