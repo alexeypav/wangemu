@@ -114,7 +114,8 @@ wvdutil/unscramble.py
 .vs/slnx.sqlite
 wangemu
 .vs/
-wangemu-headless
 obj_headless/*
 obj_terminal_server/*
 obj_terminal_server_aarch64/*
+*.zip
+screenshots/*

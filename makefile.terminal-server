@@ -16,59 +16,73 @@
 # don't create dependency files for these targets
 NODEPS := clean
 
-# Find all the source files in the src/ directory
-CPP_SOURCES := $(shell find src -name "*.cpp")
-C_SOURCES   := $(shell find src -name "*.c")
-H_SOURCES   := $(shell find src -name "*.h")
+# Project root paths (makefile is now in project root)
+SRCDIR := ./src
+OBJDIR := ./obj_terminal_server
 
-# Exclude wxWidgets-dependent files for headless build
-EXCLUDE_FILES := src/UiSystem.cpp \
-                 src/UiCrtFrame.cpp \
-                 src/UiCrtConfigDlg.cpp \
-                 src/UiCrt_Keyboard.cpp \
-                 src/UiCrt_Keyboard_martin.cpp \
-                 src/UiCrtStatusBar.cpp \
-                 src/UiSystemConfigDlg.cpp \
-                 src/UiTermMuxCfgDlg.cpp \
-                 src/UiPrinterFrame.cpp \
-                 src/UiPrinterConfigDlg.cpp \
-                 src/UiPrinter.cpp \
-                 src/UiMyStaticText.cpp \
-                 src/UiMyAboutDlg.cpp \
-                 src/UiDiskCtrlCfgDlg.cpp \
-                 src/UiDiskFactory.cpp \
-                 src/UiControlFrame.cpp \
-                 src/UiCrt_Render.cpp \
-                 src/UiCrt_Charset.cpp \
-                 src/UiCrtErrorDlg.cpp \
-                 src/UiCrt.cpp \
-                 src/host.cpp \
-                 src/Terminal.cpp \
-                 src/IoCardDisplay.cpp \
-                 src/IoCardPrinter.cpp
+# Core source files (platform independent)
+CORE_CPP_SOURCES := \
+    $(SRCDIR)/core/cpu/Cpu2200t.cpp \
+    $(SRCDIR)/core/cpu/Cpu2200vp.cpp \
+    $(SRCDIR)/core/cpu/ucode_2200B.cpp \
+    $(SRCDIR)/core/cpu/ucode_2200T.cpp \
+    $(SRCDIR)/core/cpu/ucode_boot_vp.cpp \
+    $(SRCDIR)/core/disk/DiskCtrlCfgState.cpp \
+    $(SRCDIR)/core/disk/Wvd.cpp \
+    $(SRCDIR)/core/io/IoCard.cpp \
+    $(SRCDIR)/core/io/IoCardDisk.cpp \
+    $(SRCDIR)/core/io/IoCardDisk_Controller.cpp \
+    $(SRCDIR)/core/io/IoCardKeyboard.cpp \
+    $(SRCDIR)/core/io/IoCardTermMux.cpp \
+    $(SRCDIR)/core/system/error_table.cpp \
+    $(SRCDIR)/core/system/Scheduler.cpp \
+    $(SRCDIR)/core/system/system2200.cpp \
+    $(SRCDIR)/core/util/dasm.cpp \
+    $(SRCDIR)/core/util/dasm_vp.cpp
 
-# Add headless-specific files
-HEADLESS_ONLY_FILES := src/UiHeadless.cpp src/main_headless.cpp src/host_headless.cpp src/TerminalServerConfig.cpp src/WebConfigServer.cpp
+# Platform-specific sources for headless/POSIX
+PLATFORM_CPP_SOURCES := \
+    $(SRCDIR)/platform/common/SerialPort.cpp \
+    $(SRCDIR)/platform/posix/host_headless.cpp
 
-# Filter out excluded files
-FILTERED_CPP_SOURCES := $(filter-out $(EXCLUDE_FILES),$(CPP_SOURCES))
-# Add headless-only files (avoid duplicates)
-HEADLESS_CPP_SOURCES := $(FILTERED_CPP_SOURCES) $(filter-out $(FILTERED_CPP_SOURCES),$(HEADLESS_ONLY_FILES))
+# Shared configuration and script files
+SHARED_CPP_SOURCES := \
+    $(SRCDIR)/shared/config/CardInfo.cpp \
+    $(SRCDIR)/shared/config/SysCfgState.cpp \
+    $(SRCDIR)/shared/config/TermMuxCfgState.cpp \
+    $(SRCDIR)/shared/script/ScriptFile.cpp \
+    $(SRCDIR)/shared/terminal/Terminal.cpp
+
+# Headless-specific files
+HEADLESS_CPP_SOURCES := \
+    $(SRCDIR)/headless/main/main_headless.cpp \
+    $(SRCDIR)/headless/main/UiHeadless.cpp \
+    $(SRCDIR)/headless/session/SerialTermSession.cpp \
+    $(SRCDIR)/headless/terminal/TerminalServerConfig.cpp \
+    $(SRCDIR)/headless/terminal/WebConfigServer.cpp
+
+# C source files
+C_SOURCES := \
+    $(SRCDIR)/core/cpu/i8080.c \
+    $(SRCDIR)/core/cpu/i8080_dasm.c
+
+# Combine all sources
+ALL_CPP_SOURCES := $(CORE_CPP_SOURCES) $(PLATFORM_CPP_SOURCES) $(SHARED_CPP_SOURCES) $(HEADLESS_CPP_SOURCES)
 
 # These are the dependency files, which make will clean up after it creates them
-DEPFILES := $(patsubst %.cpp,%.d,$(HEADLESS_CPP_SOURCES)) \
-            $(patsubst %.c,%.d,$(C_SOURCES))
+DEPFILES := $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.d,$(ALL_CPP_SOURCES)) \
+            $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.d,$(C_SOURCES))
 
-OBJFILES := $(patsubst src/%.cpp,obj_terminal_server/%.o,$(HEADLESS_CPP_SOURCES)) \
-            $(patsubst src/%.c,obj_terminal_server/%.o,$(C_SOURCES))
+OBJFILES := $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.o,$(ALL_CPP_SOURCES)) \
+            $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(C_SOURCES))
 
 # debug build
 debug: OPTFLAGS := -g -O0
-debug: wangemu-terminal-server
+debug: ./wangemu-terminal-server
 
 # optimized build
 opt: OPTFLAGS := -O2
-opt: wangemu-terminal-server
+opt: ./wangemu-terminal-server
 
 # Compiler settings for headless build (no wxWidgets)
 CXX         := g++
@@ -78,36 +92,42 @@ CXXWARNINGS := -Wall -Wextra -Wshadow -Wformat -Wundef -Wstrict-aliasing=1 \
                -Wno-ctor-dtor-privacy -Woverloaded-virtual
 LDFLAGS     := -pthread
 
-# don't create dependencies when we're cleaning, for instance
-ifeq (0, $(words $(findstring $(MAKECMDGOALS), $(NODEPS))))
-    -include $(DEPFILES)
+# Create the executable
+./wangemu-terminal-server: $(OBJFILES)
+	$(CXX) -o $@ $(OBJFILES) $(LDFLAGS)
+
+# Include all the dependency files
+ifneq ($(MAKECMDGOALS),clean)
+ifneq ($(strip $(DEPFILES)),)
+-include $(DEPFILES)
+endif
 endif
 
-# ===== create the dependency files =====
-
-src/%.d: src/%.cpp
-	$(CXX) $(CXXFLAGS) -MM -MT '$(patsubst src/%.cpp,obj_terminal_server/%.o,$<)' $< -MF $@
-
-src/%.d: src/%.c
-	$(CXX) $(CXXFLAGS) -MM -MT '$(patsubst src/%.c,obj_terminal_server/%.o,$<)' $< -MF $@
-
-# ===== build the .o files =====
-
-obj_terminal_server/%.o: src/%.cpp src/%.d
+# This is the rule for creating the dependency files
+$(OBJDIR)/%.d: $(SRCDIR)/%.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $(OPTFLAGS) $(CXXFLAGS) $(CXXWARNINGS) -o $@ -c $<
+	@echo "Making dependency $@ from $<"
+	@$(CXX) $(CXXFLAGS) $(OPTFLAGS) $(CXXWARNINGS) -MM -MF $@ -MT $(OBJDIR)/$*.o $<
 
-obj_terminal_server/%.o: src/%.c src/%.d
+$(OBJDIR)/%.d: $(SRCDIR)/%.c
 	@mkdir -p $(dir $@)
-	$(CXX) $(OPTFLAGS) $(CXXFLAGS) -o $@ -c $<
+	@echo "Making dependency $@ from $<"
+	@$(CXX) $(CXXFLAGS) $(OPTFLAGS) $(CXXWARNINGS) -MM -MF $@ -MT $(OBJDIR)/$*.o $<
 
-# ==== link step ====
+# This is the rule for compiling the source files
+$(OBJDIR)/%.o: $(SRCDIR)/%.cpp
+	@mkdir -p $(dir $@)
+	@echo "Compiling $<"
+	$(CXX) -c $(CXXFLAGS) $(OPTFLAGS) $(CXXWARNINGS) -o $@ $<
 
-wangemu-terminal-server: $(OBJFILES)
-	$(CXX) $(LDFLAGS) $(OBJFILES) -o wangemu-terminal-server
-
-# ===== clean build products =====
+$(OBJDIR)/%.o: $(SRCDIR)/%.c  
+	@mkdir -p $(dir $@)
+	@echo "Compiling $<"
+	$(CXX) -c $(CXXFLAGS) $(OPTFLAGS) $(CXXWARNINGS) -o $@ $<
 
 clean:
-	rm -f src/*.d obj_terminal_server/*.o wangemu-terminal-server
-	rm -rf obj_terminal_server/
+	@echo "Cleaning terminal server build artifacts"
+	@rm -rf $(OBJDIR)
+	@rm -f ./wangemu-terminal-server
+
+# vim: ts=8:et:sw=4:smarttab

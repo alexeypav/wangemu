@@ -1,0 +1,1582 @@
+#include "WebConfigServer.h"
+#include "../../platform/common/host.h"
+#include "../../core/system/system2200.h"
+#include "../../shared/config/SysCfgState.h"
+#include "../../core/io/IoCardDisk.h"
+#include "../../core/cpu/Cpu2200.h"
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <signal.h>
+#include <fstream>
+#include <sstream>
+#include <iostream>
+#include <cstring>
+#include <regex>
+#include <thread>
+#include <chrono>
+
+WebConfigServer::WebConfigServer(int port, const std::string& iniPath) 
+    : m_port(port), m_iniPath(iniPath) 
+{
+}
+
+WebConfigServer::~WebConfigServer() {
+    stop();
+}
+
+bool WebConfigServer::start() {
+    if (m_running.load()) {
+        return true; // Already running
+    }
+    
+    m_running.store(true);
+    m_serverThread = std::thread(&WebConfigServer::serverLoop, this);
+    
+    // Give it a moment to start
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    return m_running.load();
+}
+
+void WebConfigServer::stop() {
+    m_running.store(false);
+    
+    if (m_serverThread.joinable()) {
+        m_serverThread.join();
+    }
+}
+
+void WebConfigServer::serverLoop() {
+    int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (serverSocket < 0) {
+        std::cerr << "[ERROR] Failed to create socket\n";
+        m_running.store(false);
+        return;
+    }
+    
+    // Enable address reuse
+    int opt = 1;
+    setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    
+    struct sockaddr_in address;
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(m_port);
+    
+    if (bind(serverSocket, (struct sockaddr*)&address, sizeof(address)) < 0) {
+        std::cerr << "[ERROR] Failed to bind to port " << m_port << "\n";
+        close(serverSocket);
+        m_running.store(false);
+        return;
+    }
+    
+    if (listen(serverSocket, 5) < 0) {
+        std::cerr << "[ERROR] Failed to listen on socket\n";
+        close(serverSocket);
+        m_running.store(false);
+        return;
+    }
+    
+    std::cout << "[INFO] Web configuration server started on port " << m_port << "\n";
+    std::cout << "[INFO] Open http://localhost:" << m_port << " in your browser\n";
+    
+    while (m_running.load()) {
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(serverSocket, &readfds);
+        
+        struct timeval timeout;
+        timeout.tv_sec = 1;
+        timeout.tv_usec = 0;
+        
+        int activity = select(serverSocket + 1, &readfds, NULL, NULL, &timeout);
+        
+        if (!m_running.load()) break;
+        
+        if (activity > 0 && FD_ISSET(serverSocket, &readfds)) {
+            struct sockaddr_in clientAddr;
+            socklen_t addrLen = sizeof(clientAddr);
+            
+            int clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &addrLen);
+            if (clientSocket >= 0) {
+                // Read request
+                char buffer[4096] = {0};
+                ssize_t bytesRead = read(clientSocket, buffer, sizeof(buffer) - 1);
+                
+                if (bytesRead > 0) {
+                    std::string requestData(buffer, bytesRead);
+                    HttpRequest request = parseRequest(requestData);
+                    handleRequest(clientSocket, request);
+                }
+                
+                close(clientSocket);
+            }
+        }
+    }
+    
+    close(serverSocket);
+    std::cout << "[INFO] Web configuration server stopped\n";
+}
+
+void WebConfigServer::handleRequest(int clientSocket, const HttpRequest& request) {
+    HttpResponse response;
+    
+    if (request.method == "GET") {
+        if (request.path == "/" || request.path == "/index.html") {
+            response = handleGetRoot();
+        } else if (request.path == "/api/config") {
+            response = handleGetConfig();
+        } else if (request.path == "/api/disk-status") {
+            response = handleGetDiskStatus();
+        } else if (request.path.find("/static/") == 0) {
+            response = serveStaticFile(request.path);
+        } else {
+            response.status = 404;
+            response.body = "Not Found";
+        }
+    } else if (request.method == "POST") {
+        if (request.path == "/api/config") {
+            response = handlePostConfig(request.body);
+        } else if (request.path == "/api/shutdown") {
+            response = handlePostShutdown();
+        } else if (request.path == "/api/restart") {
+            response = handlePostRestart();
+        } else if (request.path == "/api/reload") {
+            response = handlePostReloadConfig();
+        } else if (request.path == "/api/internal-restart") {
+            response = handlePostInternalRestart();
+        } else if (request.path == "/api/disk-insert") {
+            response = handlePostDiskInsert(request.body);
+        } else if (request.path == "/api/disk-remove") {
+            response = handlePostDiskRemove(request.body);
+        } else if (request.path == "/api/disk-speed-toggle") {
+            response = handlePostDiskSpeedToggle(request.body);
+        } else {
+            response.status = 404;
+            response.body = "Not Found";
+        }
+    } else {
+        response.status = 405;
+        response.body = "Method Not Allowed";
+    }
+    
+    std::string responseStr = formatResponse(response);
+    write(clientSocket, responseStr.c_str(), responseStr.length());
+}
+
+WebConfigServer::HttpResponse WebConfigServer::handleGetConfig() {
+    HttpResponse response;
+    response.headers["Content-Type"] = "application/json";
+    response.headers["Access-Control-Allow-Origin"] = "*";
+    
+    std::string iniContent = readIniFile();
+    if (iniContent.empty()) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to read configuration file\"}";
+        return response;
+    }
+    
+    // Convert INI content to JSON for easier web editing
+    std::ostringstream json;
+    json << "{\"iniContent\":\"";
+    
+    // Escape the INI content for JSON
+    for (char c : iniContent) {
+        if (c == '"') json << "\\\"";
+        else if (c == '\\') json << "\\\\";
+        else if (c == '\n') json << "\\n";
+        else if (c == '\r') json << "\\r";
+        else if (c == '\t') json << "\\t";
+        else json << c;
+    }
+    
+    json << "\"}";
+    response.body = json.str();
+    return response;
+}
+
+WebConfigServer::HttpResponse WebConfigServer::handlePostConfig(const std::string& body) {
+    HttpResponse response;
+    response.headers["Content-Type"] = "application/json";
+    response.headers["Access-Control-Allow-Origin"] = "*";
+    
+    // Parse JSON body to extract INI content - simple string search approach
+    // Look for "iniContent":" and extract content until closing "
+    size_t startPos = body.find("\"iniContent\":\"");
+    if (startPos == std::string::npos) {
+        response.status = 400;
+        response.body = "{\"error\":\"Invalid JSON format - missing iniContent field\"}";
+        return response;
+    }
+    
+    startPos += 14; // Skip past "iniContent":"
+    
+    // Find the closing quote, handling escaped quotes
+    std::string iniContent;
+    bool escaped = false;
+    for (size_t i = startPos; i < body.length(); ++i) {
+        char c = body[i];
+        if (escaped) {
+            switch (c) {
+                case '"': iniContent += '"'; break;
+                case '\\': iniContent += '\\'; break;
+                case 'n': iniContent += '\n'; break;
+                case 'r': iniContent += '\r'; break;
+                case 't': iniContent += '\t'; break;
+                default: iniContent += c; break;
+            }
+            escaped = false;
+        } else if (c == '\\') {
+            escaped = true;
+        } else if (c == '"') {
+            break; // Found closing quote
+        } else {
+            iniContent += c;
+        }
+    }
+    
+    // No need to unescape since we already handled it above
+    std::string& unescaped = iniContent;
+    
+    // Validate INI content
+    if (!validateIniContent(unescaped)) {
+        response.status = 400;
+        response.body = "{\"error\":\"Invalid INI configuration\"}";
+        return response;
+    }
+    
+    // Write to file
+    if (!writeIniFile(unescaped)) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to write configuration file\"}";
+        return response;
+    }
+    
+    response.body = "{\"status\":\"success\"}";
+    return response;
+}
+
+WebConfigServer::HttpResponse WebConfigServer::handlePostInternalRestart() {
+    HttpResponse response;
+    response.headers["Content-Type"] = "application/json";
+    response.headers["Access-Control-Allow-Origin"] = "*";
+    
+    try {
+        // This implements the GUI "OK, reboot" functionality:
+        // 1. Reload host configuration from INI file
+        // 2. Create new SysCfgState from host config
+        // 3. Apply configuration using system2200::setConfig (internal restart)
+        
+        std::cout << "[INFO] Requesting safe internal system restart...\n";
+        
+        // Reload configuration to ensure disk_realtime setting is current
+        host::loadConfigFile(m_iniPath);
+        
+        // Apply disk realtime setting immediately (this doesn't require restart)
+        system2200::setDiskRealtime(system2200::config().getDiskRealtime());
+        
+        // Instead of doing the restart directly (which can cause race conditions),
+        // set a flag for the main thread to perform the restart safely
+        extern void requestInternalRestart();  // Defined in main_headless.cpp
+        requestInternalRestart();
+        
+        // Give the main thread a moment to start processing
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        
+        response.body = "{\"status\":\"internal restart requested - system will reconfigure safely\"}";
+        
+    } catch (const std::exception& e) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to perform internal restart: " + std::string(e.what()) + "\"}";
+        std::cerr << "[ERROR] Failed to perform internal restart: " << e.what() << "\n";
+    } catch (...) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to perform internal restart: unknown error\"}";
+        std::cerr << "[ERROR] Failed to perform internal restart: unknown error\n";
+    }
+    
+    return response;
+}
+
+WebConfigServer::HttpResponse WebConfigServer::handlePostReloadConfig() {
+    HttpResponse response;
+    response.headers["Content-Type"] = "application/json";
+    response.headers["Access-Control-Allow-Origin"] = "*";
+    
+    try {
+        // Reload configuration from the INI file into the host system only
+        // This is for configuration that doesn't require restart
+        host::loadConfigFile(m_iniPath);
+        response.body = "{\"status\":\"configuration reloaded successfully\"}";
+        std::cout << "[INFO] Configuration reloaded from " << m_iniPath << " via web interface\n";
+    } catch (const std::exception& e) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to reload configuration: " + std::string(e.what()) + "\"}";
+        std::cerr << "[ERROR] Failed to reload configuration: " << e.what() << "\n";
+    } catch (...) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to reload configuration: unknown error\"}";
+        std::cerr << "[ERROR] Failed to reload configuration: unknown error\n";
+    }
+    
+    return response;
+}
+
+
+WebConfigServer::HttpResponse WebConfigServer::handlePostShutdown() {
+    HttpResponse response;
+    response.headers["Content-Type"] = "application/json";
+    response.headers["Access-Control-Allow-Origin"] = "*";
+    
+    // Execute system shutdown in a separate thread after sending response
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        
+        std::cout << "[INFO] System shutdown requested from web interface\n";
+        std::cout << "[INFO] Executing: sudo shutdown -h now\n";
+        
+        // Try different shutdown commands based on system
+        int result = system("sudo shutdown -h now");
+        if (result != 0) {
+            // Fallback to systemctl if shutdown command fails
+            result = system("sudo systemctl poweroff");
+            if (result != 0) {
+                // Last resort - try init
+                result = system("sudo init 0");
+                if (result != 0) {
+                    std::cerr << "[ERROR] Failed to shutdown system - all shutdown commands failed\n";
+                }
+            }
+        }
+    }).detach();
+    
+    response.body = "{\"status\":\"System shutdown initiated - server will power off in a few seconds\"}";
+    return response;
+}
+
+WebConfigServer::HttpResponse WebConfigServer::handlePostRestart() {
+    HttpResponse response;
+    response.headers["Content-Type"] = "application/json";
+    response.headers["Access-Control-Allow-Origin"] = "*";
+    
+    // Execute system restart in a separate thread after sending response
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        
+        std::cout << "[INFO] System restart requested from web interface\n";
+        std::cout << "[INFO] Executing: sudo reboot\n";
+        
+        // Try different restart commands based on system
+        int result = system("sudo reboot");
+        if (result != 0) {
+            // Fallback to systemctl if reboot command fails
+            result = system("sudo systemctl reboot");
+            if (result != 0) {
+                // Last resort - try init
+                result = system("sudo init 6");
+                if (result != 0) {
+                    std::cerr << "[ERROR] Failed to restart system - all restart commands failed\n";
+                }
+            }
+        }
+    }).detach();
+    
+    response.body = "{\"status\":\"System restart initiated - server will reboot in a few seconds\"}";
+    return response;
+}
+
+WebConfigServer::HttpResponse WebConfigServer::handlePostDiskInsert(const std::string& body) {
+    HttpResponse response;
+    response.headers["Content-Type"] = "application/json";
+    response.headers["Access-Control-Allow-Origin"] = "*";
+    
+    try {
+        // Parse JSON request: {"slot": 0, "drive": 0, "filename": "/path/to/disk.wvd"}
+        std::cout << "[INFO] Disk insert request: " << body << "\n";
+        
+        // Simple JSON parsing for slot, drive, and filename
+        int slot = -1, drive = -1;
+        std::string filename;
+        
+        size_t slotPos = body.find("\"slot\":");
+        if (slotPos != std::string::npos) {
+            slotPos += 7; // Skip "slot":
+            while (slotPos < body.size() && (body[slotPos] == ' ' || body[slotPos] == '\t')) slotPos++;
+            if (slotPos < body.size() && isdigit(body[slotPos])) {
+                slot = body[slotPos] - '0';
+            }
+        }
+        
+        size_t drivePos = body.find("\"drive\":");
+        if (drivePos != std::string::npos) {
+            drivePos += 8; // Skip "drive":
+            while (drivePos < body.size() && (body[drivePos] == ' ' || body[drivePos] == '\t')) drivePos++;
+            if (drivePos < body.size() && isdigit(body[drivePos])) {
+                drive = body[drivePos] - '0';
+            }
+        }
+        
+        size_t filenamePos = body.find("\"filename\":");
+        if (filenamePos != std::string::npos) {
+            filenamePos += 11; // Skip "filename":
+            while (filenamePos < body.size() && (body[filenamePos] == ' ' || body[filenamePos] == '\t' || body[filenamePos] == '"')) filenamePos++;
+            size_t endPos = body.find('"', filenamePos);
+            if (endPos != std::string::npos) {
+                filename = body.substr(filenamePos, endPos - filenamePos);
+            }
+        }
+        
+        if (slot < 0 || drive < 0 || filename.empty()) {
+            response.status = 400;
+            response.body = "{\"error\":\"Invalid request format. Expected {slot: N, drive: N, filename: 'path'}\"}";
+            return response;
+        }
+        
+        std::cout << "[INFO] Inserting disk: slot=" << slot << ", drive=" << drive << ", file=" << filename << "\n";
+        
+        // Check if drive already has a disk (like GUI does)
+        const int status = IoCardDisk::wvdDriveStatus(slot, drive);
+        if ((status & IoCardDisk::WVD_STAT_DRIVE_OCCUPIED) != 0) {
+            response.status = 400;
+            response.body = "{\"error\":\"Drive already contains a disk. Remove it first.\"}";
+            return response;
+        }
+        
+        // Use the same direct disk operation as the GUI
+        bool ok = IoCardDisk::wvdInsertDisk(slot, drive, filename);
+        
+        if (ok) {
+            response.body = "{\"status\":\"disk inserted successfully\"}";
+            std::cout << "[INFO] Disk inserted successfully\n";
+        } else {
+            response.status = 500;
+            response.body = "{\"error\":\"Failed to insert disk\"}";
+            std::cout << "[ERROR] Failed to insert disk\n";
+        }
+        
+    } catch (const std::exception& e) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to insert disk: " + std::string(e.what()) + "\"}";
+        std::cerr << "[ERROR] Failed to insert disk: " << e.what() << "\n";
+    } catch (...) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to insert disk: unknown error\"}";
+        std::cerr << "[ERROR] Failed to insert disk: unknown error\n";
+    }
+    
+    return response;
+}
+
+WebConfigServer::HttpResponse WebConfigServer::handlePostDiskRemove(const std::string& body) {
+    HttpResponse response;
+    response.headers["Content-Type"] = "application/json";
+    response.headers["Access-Control-Allow-Origin"] = "*";
+    
+    try {
+        // Parse JSON request: {"slot": 0, "drive": 0}
+        std::cout << "[INFO] Disk remove request: " << body << "\n";
+        
+        // Simple JSON parsing for slot and drive
+        int slot = -1, drive = -1;
+        
+        size_t slotPos = body.find("\"slot\":");
+        if (slotPos != std::string::npos) {
+            slotPos += 7; // Skip "slot":
+            while (slotPos < body.size() && (body[slotPos] == ' ' || body[slotPos] == '\t')) slotPos++;
+            if (slotPos < body.size() && isdigit(body[slotPos])) {
+                slot = body[slotPos] - '0';
+            }
+        }
+        
+        size_t drivePos = body.find("\"drive\":");
+        if (drivePos != std::string::npos) {
+            drivePos += 8; // Skip "drive":
+            while (drivePos < body.size() && (body[drivePos] == ' ' || body[drivePos] == '\t')) drivePos++;
+            if (drivePos < body.size() && isdigit(body[drivePos])) {
+                drive = body[drivePos] - '0';
+            }
+        }
+        
+        if (slot < 0 || drive < 0) {
+            response.status = 400;
+            response.body = "{\"error\":\"Invalid request format. Expected {slot: N, drive: N}\"}";
+            return response;
+        }
+        
+        std::cout << "[INFO] Removing disk: slot=" << slot << ", drive=" << drive << "\n";
+        
+        // Check if drive actually has a disk to remove
+        const int status = IoCardDisk::wvdDriveStatus(slot, drive);
+        if ((status & IoCardDisk::WVD_STAT_DRIVE_OCCUPIED) == 0) {
+            response.status = 400;
+            response.body = "{\"error\":\"No disk in drive to remove.\"}";
+            return response;
+        }
+        
+        // Use the same direct disk operation as the GUI
+        bool ok = IoCardDisk::wvdRemoveDisk(slot, drive);
+        
+        if (ok) {
+            response.body = "{\"status\":\"disk removed successfully\"}";
+            std::cout << "[INFO] Disk removed successfully\n";
+        } else {
+            response.status = 500;
+            response.body = "{\"error\":\"Failed to remove disk\"}";
+            std::cout << "[ERROR] Failed to remove disk\n";
+        }
+        
+    } catch (const std::exception& e) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to remove disk: " + std::string(e.what()) + "\"}";
+        std::cerr << "[ERROR] Failed to remove disk: " << e.what() << "\n";
+    } catch (...) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to remove disk: unknown error\"}";
+        std::cerr << "[ERROR] Failed to remove disk: unknown error\n";
+    }
+    
+    return response;
+}
+
+WebConfigServer::HttpResponse WebConfigServer::handleGetDiskStatus() {
+    HttpResponse response;
+    response.headers["Content-Type"] = "application/json";
+    response.headers["Access-Control-Allow-Origin"] = "*";
+    
+    try {
+        std::ostringstream json;
+        json << "{\"drives\":[";
+        
+        // Check status of drives 0-3 in slot 1
+        for (int drive = 0; drive < 4; drive++) {
+            if (drive > 0) json << ",";
+            
+            const int status = IoCardDisk::wvdDriveStatus(1, drive);
+            const bool exists = (status & IoCardDisk::WVD_STAT_DRIVE_EXISTENT) != 0;
+            const bool occupied = (status & IoCardDisk::WVD_STAT_DRIVE_OCCUPIED) != 0;
+            const bool busy = (status & IoCardDisk::WVD_STAT_DRIVE_BUSY) != 0;
+            
+            json << "{\"drive\":" << drive 
+                 << ",\"exists\":" << (exists ? "true" : "false")
+                 << ",\"occupied\":" << (occupied ? "true" : "false") 
+                 << ",\"busy\":" << (busy ? "true" : "false") << "}";
+        }
+        
+        json << "]}";
+        response.body = json.str();
+        
+    } catch (const std::exception& e) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to get disk status: " + std::string(e.what()) + "\"}";
+        std::cerr << "[ERROR] Failed to get disk status: " << e.what() << "\n";
+    } catch (...) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to get disk status: unknown error\"}";
+        std::cerr << "[ERROR] Failed to get disk status: unknown error\n";
+    }
+    
+    return response;
+}
+
+WebConfigServer::HttpResponse WebConfigServer::handlePostDiskSpeedToggle(const std::string& body) {
+    HttpResponse response;
+    response.headers["Content-Type"] = "application/json";
+    response.headers["Access-Control-Allow-Origin"] = "*";
+    
+    try {
+        // Parse JSON request: {"realtime": true/false}
+        std::cout << "[INFO] Disk speed toggle request: " << body << "\n";
+        
+        bool realtime = true; // default to realtime mode
+        
+        // Simple JSON parsing for realtime flag
+        size_t realtimePos = body.find("\"realtime\":");
+        if (realtimePos != std::string::npos) {
+            realtimePos += 11; // Skip "realtime":
+            while (realtimePos < body.size() && (body[realtimePos] == ' ' || body[realtimePos] == '\t')) realtimePos++;
+            
+            if (realtimePos + 4 < body.size() && body.substr(realtimePos, 4) == "true") {
+                realtime = true;
+            } else if (realtimePos + 5 < body.size() && body.substr(realtimePos, 5) == "false") {
+                realtime = false;
+            }
+        }
+        
+        std::cout << "[INFO] Setting disk speed to: " << (realtime ? "realtime" : "unregulated") << "\n";
+        
+        // Apply the setting immediately (like the original GUI does)
+        system2200::setDiskRealtime(realtime);
+        
+        // Also update the host config so it persists across restarts
+        // This mimics what the original GUI does when saving configuration
+        std::string subgroup("misc");
+        host::configWriteBool(subgroup, "disk_realtime", realtime);
+        
+        response.body = "{\"status\":\"disk speed setting applied immediately\",\"realtime\":" + 
+                        std::string(realtime ? "true" : "false") + "}";
+        std::cout << "[INFO] Disk speed setting applied successfully\n";
+        
+    } catch (const std::exception& e) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to set disk speed: " + std::string(e.what()) + "\"}";
+        std::cerr << "[ERROR] Failed to set disk speed: " << e.what() << "\n";
+    } catch (...) {
+        response.status = 500;
+        response.body = "{\"error\":\"Failed to set disk speed: unknown error\"}";
+        std::cerr << "[ERROR] Failed to set disk speed: unknown error\n";
+    }
+    
+    return response;
+}
+
+WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
+    HttpResponse response;
+    response.headers["Content-Type"] = "text/html";
+    
+    // Build user-friendly GUI-style configuration interface
+    std::ostringstream html;
+    html << "<!DOCTYPE html>\n";
+    html << "<html lang=\"en\">\n";
+    html << "<head>\n";
+    html << "    <meta charset=\"UTF-8\">\n";
+    html << "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n";
+    html << "    <title>Wang 2200 Terminal Server Configuration</title>\n";
+    html << "    <style>\n";
+    html << "        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background: #f0f0f0; }\n";
+    html << "        .container { max-width: 900px; margin: 0 auto; }\n";
+    html << "        .config-panel { background: #fff; border: 1px solid #ccc; border-radius: 6px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }\n";
+    html << "        .panel-header { background: linear-gradient(to bottom, #f8f8f8, #e8e8e8); border-bottom: 1px solid #ccc; padding: 12px 20px; font-weight: bold; color: #333; border-radius: 6px 6px 0 0; }\n";
+    html << "        .panel-body { padding: 20px; }\n";
+    html << "        .form-group { margin-bottom: 15px; }\n";
+    html << "        .form-group label { display: block; margin-bottom: 5px; font-weight: bold; color: #333; }\n";
+    html << "        .form-group select, .form-group input[type=\"text\"], .form-group input[type=\"number\"] { padding: 6px 8px; border: 1px solid #ccc; border-radius: 3px; font-size: 12px; background: white; }\n";
+    html << "        .form-group select { width: 150px; }\n";
+    html << "        .form-group input[type=\"text\"] { width: 200px; }\n";
+    html << "        .form-group input[type=\"number\"] { width: 80px; }\n";
+    html << "        .terminal-grid { display: grid; grid-template-columns: 80px 200px 80px auto; gap: 10px; align-items: center; margin-bottom: 8px; }\n";
+    html << "        .terminal-grid:first-child { font-weight: bold; background: #f5f5f5; padding: 8px 0; margin-bottom: 15px; }\n";
+    html << "        .terminal-grid input[type=\"checkbox\"] { justify-self: center; }\n";
+    html << "        .num-terminals { margin-bottom: 20px; }\n";
+    html << "        .num-terminals input[type=\"radio\"] { margin-right: 5px; margin-left: 15px; }\n";
+    html << "        .buttons { text-align: center; margin: 20px 0; }\n";
+    html << "        .btn { background: #0078d4; color: white; border: none; padding: 8px 16px; margin: 0 5px; border-radius: 3px; cursor: pointer; font-size: 12px; }\n";
+    html << "        .btn:hover { background: #106ebe; }\n";
+    html << "        .btn.secondary { background: #6c757d; }\n";
+    html << "        .btn.secondary:hover { background: #5a6268; }\n";
+    html << "        .btn.danger { background: #dc3545; }\n";
+    html << "        .btn.danger:hover { background: #c82333; }\n";
+    html << "        .status { margin: 15px 0; padding: 10px; border-radius: 4px; text-align: center; }\n";
+    html << "        .status.success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }\n";
+    html << "        .status.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }\n";
+    html << "        .row { display: flex; gap: 20px; align-items: center; margin-bottom: 15px; }\n";
+    html << "        .checkbox-group { display: flex; align-items: center; gap: 8px; }\n";
+    html << "        .toggle-switch { position: relative; display: inline-block; width: 30px; height: 17px; }\n";
+    html << "        .toggle-switch input { opacity: 0; width: 0; height: 0; }\n";
+    html << "        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccccccff; border-radius: 17px; transition: .4s; }\n";
+    html << "        .slider:before { position: absolute; content: \"\"; height: 13px; width: 13px; left: 2px; bottom: 2px; background-color: white; border-radius: 50%; transition: .4s; }\n";
+    html << "        input:checked + .slider { background-color: #ccccccff; }\n";
+    html << "        input:checked + .slider:before { transform: translateX(13px); }\n";
+    html << "        .slider:hover { opacity: 0.8; }\n";
+    html << "        .toggle-label { margin-left: 10px; font-weight: normal; }\n";
+    html << "        h1 { text-align: center; color: #333; margin-bottom: 30px; }\n";
+    html << "        .advanced-toggle { margin-top: 20px; text-align: center; }\n";
+    html << "        .advanced-config { display: none; margin-top: 20px; }\n";
+    html << "        .advanced-config textarea { width: 100%; height: 200px; font-family: monospace; font-size: 11px; }\n";
+    html << "    </style>\n";
+    html << "</head>\n";
+    html << "<body>\n";
+    html << "    <div class=\"container\">\n";
+    html << "        <h1>Wang 2200 Terminal Server Configuration</h1>\n";
+    html << "        \n";
+    html << "        <!-- System Configuration Panel -->\n";
+    html << "        <div class=\"config-panel\">\n";
+    html << "            <div class=\"panel-header\">System Configuration</div>\n";
+    html << "            <div class=\"panel-body\">\n";
+    html << "                <div class=\"row\">\n";
+    html << "                    <div class=\"form-group\">\n";
+    html << "                        <label for=\"cpu\">CPU:</label>\n";
+    html << "                        <select id=\"cpu\">\n";
+    html << "                            <option value=\"2200B\">2200B</option>\n";
+    html << "                            <option value=\"2200T\">2200T</option>\n";
+    html << "                            <option value=\"2200VP\">2200VP</option>\n";
+    html << "                            <option value=\"2200MVP-C\">2200MVP-C</option>\n";
+    html << "                            <option value=\"MicroVP\">MicroVP</option>\n";
+    html << "                        </select>\n";
+    html << "                    </div>\n";
+    html << "                    <div class=\"form-group\">\n";
+    html << "                        <label for=\"ram\">RAM:</label>\n";
+    html << "                        <select id=\"ram\">\n";
+    html << "                            <!-- RAM options will be populated dynamically based on CPU type -->\n";
+    html << "                        </select>\n";
+    html << "                    </div>\n";
+    html << "                </div>\n";
+    html << "                <div class=\"checkbox-group\">\n";
+    html << "                    <input type=\"checkbox\" id=\"warnInvalidIo\"> <label for=\"warnInvalidIo\">Warn on Invalid I/O Device Access</label>\n";
+    html << "                </div>\n";
+    html << "            </div>\n";
+    html << "        </div>\n";
+    html << "        \n";
+    html << "        <!-- Terminal Configuration Panel -->\n";
+    html << "        <div class=\"config-panel\">\n";
+    html << "            <div class=\"panel-header\">Terminal Multiplexer Configuration</div>\n";
+    html << "            <div class=\"panel-body\">\n";
+    html << "                <div class=\"num-terminals\">\n";
+    html << "                    <label>Number of terminals:</label>\n";
+    html << "                    <input type=\"radio\" name=\"numTerminals\" value=\"1\" id=\"term1\" checked> <label for=\"term1\">1</label>\n";
+    html << "                    <input type=\"radio\" name=\"numTerminals\" value=\"2\" id=\"term2\"> <label for=\"term2\">2</label>\n";
+    html << "                    <input type=\"radio\" name=\"numTerminals\" value=\"3\" id=\"term3\"> <label for=\"term3\">3</label>\n";
+    html << "                    <input type=\"radio\" name=\"numTerminals\" value=\"4\" id=\"term4\"> <label for=\"term4\">4</label>\n";
+    html << "                </div>\n";
+    html << "                \n";
+    html << "                <div class=\"terminal-grid\">\n";
+    html << "                    <div>Terminal</div>\n";
+    html << "                    <div>Port Name</div>\n";
+    html << "                    <div>Baud Rate</div>\n";
+    html << "                    <div></div>\n";
+    html << "                </div>\n";
+    html << "                \n";
+    html << "                <div class=\"terminal-grid terminal-row\" id=\"terminalRow0\">\n";
+    html << "                    <div>Terminal 1</div>\n";
+    html << "                    <input type=\"text\" id=\"term1_port\" value=\"/dev/ttyUSB0\" placeholder=\"/dev/ttyUSB0\">\n";
+    html << "                    <select id=\"term1_baud\">\n";
+    html << "                        <option value=\"19200\" selected>19200</option>\n";
+    html << "                        <option value=\"9600\">9600</option>\n";
+    html << "                        <option value=\"4800\">4800</option>\n";
+    html << "                        <option value=\"2400\">2400</option>\n";
+    html << "                        <option value=\"1200\">1200</option>\n";
+    html << "                    </select>\n";
+    html << "                    <div></div>\n";
+    html << "                </div>\n";
+    html << "                \n";
+    html << "                <div class=\"terminal-grid terminal-row\" id=\"terminalRow1\" style=\"display: none;\">\n";
+    html << "                    <div>Terminal 2</div>\n";
+    html << "                    <input type=\"text\" id=\"term2_port\" value=\"/dev/ttyUSB1\" placeholder=\"/dev/ttyUSB1\">\n";
+    html << "                    <select id=\"term2_baud\">\n";
+    html << "                        <option value=\"19200\" selected>19200</option>\n";
+    html << "                        <option value=\"9600\">9600</option>\n";
+    html << "                        <option value=\"4800\">4800</option>\n";
+    html << "                        <option value=\"2400\">2400</option>\n";
+    html << "                        <option value=\"1200\">1200</option>\n";
+    html << "                    </select>\n";
+    html << "                    <div></div>\n";
+    html << "                </div>\n";
+    html << "                \n";
+    html << "                <div class=\"terminal-grid terminal-row\" id=\"terminalRow2\" style=\"display: none;\">\n";
+    html << "                    <div>Terminal 3</div>\n";
+    html << "                    <input type=\"text\" id=\"term3_port\" value=\"/dev/ttyUSB2\" placeholder=\"/dev/ttyUSB2\">\n";
+    html << "                    <select id=\"term3_baud\">\n";
+    html << "                        <option value=\"19200\" selected>19200</option>\n";
+    html << "                        <option value=\"9600\">9600</option>\n";
+    html << "                        <option value=\"4800\">4800</option>\n";
+    html << "                        <option value=\"2400\">2400</option>\n";
+    html << "                        <option value=\"1200\">1200</option>\n";
+    html << "                    </select>\n";
+    html << "                    <div></div>\n";
+    html << "                </div>\n";
+    html << "                \n";
+    html << "                <div class=\"terminal-grid terminal-row\" id=\"terminalRow3\" style=\"display: none;\">\n";
+    html << "                    <div>Terminal 4</div>\n";
+    html << "                    <input type=\"text\" id=\"term4_port\" value=\"/dev/ttyUSB3\" placeholder=\"/dev/ttyUSB3\">\n";
+    html << "                    <select id=\"term4_baud\">\n";
+    html << "                        <option value=\"19200\" selected>19200</option>\n";
+    html << "                        <option value=\"9600\">9600</option>\n";
+    html << "                        <option value=\"4800\">4800</option>\n";
+    html << "                        <option value=\"2400\">2400</option>\n";
+    html << "                        <option value=\"1200\">1200</option>\n";
+    html << "                    </select>\n";
+    html << "                    <div></div>\n";
+    html << "                </div>\n";
+    html << "            </div>\n";
+    html << "        </div>\n";
+    html << "        \n";
+    html << "        <!-- Disk Controller Configuration Panel -->\n";
+    html << "        <div class=\"config-panel\">\n";
+    html << "            <div class=\"panel-header\">Disk Controller Configuration</div>\n";
+    html << "            <div class=\"panel-body\">\n";
+    html << "                <div class=\"row\">\n";
+    html << "                    <div class=\"form-group\">\n";
+    html << "                        <label>6541 Disk Controller (Disk 1/2 at /310, Disk 3/4 at /350)</label>\n";
+    html << "                    </div>\n";
+    html << "                </div>\n";
+    html << "                \n";
+    html << "                <div class=\"row\">\n";
+    html << "                    <span>Unregulated Speed</span>\n";
+    html << "                    <label class=\"toggle-switch\">\n";
+    html << "                        <input type=\"checkbox\" id=\"diskRealtime\" checked>\n";
+    html << "                        <span class=\"slider\"></span>\n";
+    html << "                    </label>\n";
+    html << "                    <span>Realtime Disk Speed</span>\n";
+    html << "                </div>\n";
+    html << "                \n";
+    html << "                <div class=\"row\">\n";
+    html << "                    <div class=\"form-group\">\n";
+    html << "                        <label for=\"numDrives\">Number of drives:</label>\n";
+    html << "                        <select id=\"numDrives\">\n";
+    html << "                            <option value=\"1\">1</option>\n";
+    html << "                            <option value=\"2\" selected>2</option>\n";
+    html << "                            <option value=\"3\">3</option>\n";
+    html << "                            <option value=\"4\">4</option>\n";
+    html << "                        </select>\n";
+    html << "                    </div>\n";
+    html << "                    <div class=\"form-group\">\n";
+    html << "                        <label for=\"intelligence\">Controller Intelligence:</label>\n";
+    html << "                        <select id=\"intelligence\">\n";
+    html << "                            <option value=\"dumb\">Dumb</option>\n";
+    html << "                            <option value=\"smart\" selected>Intelligent</option>\n";
+    html << "                        </select>\n";
+    html << "                    </div>\n";
+    html << "                </div>\n";
+    html << "                \n";
+    html << "                <div class=\"checkbox-group\">\n";
+    html << "                    <input type=\"checkbox\" id=\"warnMismatch\" checked> <label for=\"warnMismatch\">Warn when the media doesn't match the controller intelligence</label>\n";
+    html << "                </div>\n";
+    html << "                \n";
+    html << "                <h4 style=\"margin-top: 20px; margin-bottom: 10px;\">Disk Files</h4>\n";
+    html << "                <div class=\"form-group drive-slot\" id=\"driveSlot0\">\n";
+    html << "                    <label>Drive 1:</label>\n";
+    html << "                    <div style=\"display: flex; align-items: center; gap: 10px;\">\n";
+    html << "                        <input type=\"text\" id=\"disk0File\" style=\"width: 300px;\" placeholder=\"Path to disk image file (.wvd)\">\n";
+    html << "                        <button type=\"button\" id=\"disk0Button\" class=\"btn secondary\" onclick=\"toggleDisk(1, 0)\">Insert</button>\n";
+    html << "                        <span id=\"disk0Status\" style=\"color: #666;\"></span>\n";
+    html << "                    </div>\n";
+    html << "                </div>\n";
+    html << "                \n";
+    html << "                <div class=\"form-group drive-slot\" id=\"driveSlot1\">\n";
+    html << "                    <label>Drive 2:</label>\n";
+    html << "                    <div style=\"display: flex; align-items: center; gap: 10px;\">\n";
+    html << "                        <input type=\"text\" id=\"disk1File\" style=\"width: 300px;\" placeholder=\"Path to disk image file (.wvd)\">\n";
+    html << "                        <button type=\"button\" id=\"disk1Button\" class=\"btn secondary\" onclick=\"toggleDisk(1, 1)\">Insert</button>\n";
+    html << "                        <span id=\"disk1Status\" style=\"color: #666;\"></span>\n";
+    html << "                    </div>\n";
+    html << "                </div>\n";
+    html << "                \n";
+    html << "                <div class=\"form-group drive-slot\" id=\"driveSlot2\" style=\"display: none;\">\n";
+    html << "                    <label>Drive 3:</label>\n";
+    html << "                    <div style=\"display: flex; align-items: center; gap: 10px;\">\n";
+    html << "                        <input type=\"text\" id=\"disk2File\" style=\"width: 300px;\" placeholder=\"Path to disk image file (.wvd)\">\n";
+    html << "                        <button type=\"button\" id=\"disk2Button\" class=\"btn secondary\" onclick=\"toggleDisk(1, 2)\">Insert</button>\n";
+    html << "                        <span id=\"disk2Status\" style=\"color: #666;\"></span>\n";
+    html << "                    </div>\n";
+    html << "                </div>\n";
+    html << "                \n";
+    html << "                <div class=\"form-group drive-slot\" id=\"driveSlot3\" style=\"display: none;\">\n";
+    html << "                    <label>Drive 4:</label>\n";
+    html << "                    <div style=\"display: flex; align-items: center; gap: 10px;\">\n";
+    html << "                        <input type=\"text\" id=\"disk3File\" style=\"width: 300px;\" placeholder=\"Path to disk image file (.wvd)\">\n";
+    html << "                        <button type=\"button\" id=\"disk3Button\" class=\"btn secondary\" onclick=\"toggleDisk(1, 3)\">Insert</button>\n";
+    html << "                        <span id=\"disk3Status\" style=\"color: #666;\"></span>\n";
+    html << "                    </div>\n";
+    html << "                </div>\n";
+    html << "            </div>\n";
+    html << "        </div>\n";
+    html << "        \n";
+    html << "        <div class=\"buttons\">\n";
+    html << "            <button class=\"btn\" onclick=\"saveAndApplyConfig()\">Apply and Reset</button>\n";
+    html << "            <button class=\"btn secondary\" onclick=\"saveConfig()\">Save Only</button>\n";
+    html << "            <button class=\"btn secondary\" onclick=\"loadConfig()\">Revert</button>\n";
+    html << "            <button class=\"btn danger\" onclick=\"restartSystem()\">Restart Host System</button>\n";
+    html << "            <button class=\"btn danger\" onclick=\"shutdownSystem()\">Shutdown Host System</button>\n";
+    html << "        </div>\n";
+    html << "        \n";
+    html << "        <div id=\"status\"></div>\n";
+    html << "        \n";
+    html << "        <div class=\"advanced-toggle\">\n";
+    html << "            <button class=\"btn secondary\" onclick=\"toggleAdvanced()\">Show Advanced (Raw INI)</button>\n";
+    html << "        </div>\n";
+    html << "        \n";
+    html << "        <div class=\"advanced-config\" id=\"advancedConfig\">\n";
+    html << "            <div class=\"config-panel\">\n";
+    html << "                <div class=\"panel-header\">Advanced Configuration (Raw INI File)</div>\n";
+    html << "                <div class=\"panel-body\">\n";
+    html << "                    <textarea id=\"rawConfigEditor\" placeholder=\"Loading configuration...\"></textarea>\n";
+    html << "                    <div style=\"margin-top: 10px;\">\n";
+    html << "                        <button class=\"btn secondary\" onclick=\"saveRawConfig()\">Save Raw Config</button>\n";
+    html << "                    </div>\n";
+    html << "                </div>\n";
+    html << "            </div>\n";
+    html << "        </div>\n";
+    html << "    </div>\n";
+    html << "\n";
+    html << "    <script>\n";
+    html << "        let currentConfig = {};\n";
+    html << "        \n";
+    html << "        function showStatus(message, isError) {\n";
+    html << "            const statusDiv = document.getElementById('status');\n";
+    html << "            statusDiv.className = 'status ' + (isError ? 'error' : 'success');\n";
+    html << "            statusDiv.textContent = message;\n";
+    html << "            setTimeout(function() { statusDiv.textContent = ''; statusDiv.className = 'status'; }, 5000);\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        function parseIniConfig(iniContent) {\n";
+    html << "            const config = {};\n";
+    html << "            const lines = iniContent.split('\\n');\n";
+    html << "            let currentSection = '';\n";
+    html << "            \n";
+    html << "            for (let line of lines) {\n";
+    html << "                line = line.trim();\n";
+    html << "                if (line.startsWith('[') && line.endsWith(']')) {\n";
+    html << "                    currentSection = line.slice(1, -1);\n";
+    html << "                    config[currentSection] = config[currentSection] || {};\n";
+    html << "                } else if (line.includes('=') && currentSection) {\n";
+    html << "                    const [key, value] = line.split('=', 2);\n";
+    html << "                    config[currentSection][key.trim()] = value.trim();\n";
+    html << "                }\n";
+    html << "            }\n";
+    html << "            return config;\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        function generateIniConfig() {\n";
+    html << "            let ini = '[wangemu]\\n';\n";
+    html << "            ini += 'configversion=1\\n';\n";
+    html << "            ini += '[wangemu/config-0]\\n';\n";
+    html << "            ini += '[wangemu/config-0/cpu]\\n';\n";
+    html << "            ini += 'cpu=' + document.getElementById('cpu').value + '\\n';\n";
+    html << "            ini += 'memsize=' + document.getElementById('ram').value + '\\n';\n";
+    html << "            ini += 'speed=regulated\\n';\n";
+    html << "            ini += '[wangemu/config-0/io/slot-0]\\n';\n";
+    html << "            ini += 'addr=0x000\\n';\n";
+    html << "            ini += 'type=2236 MXD\\n';\n";
+    html << "            ini += '[wangemu/config-0/io/slot-0/cardcfg]\\n';\n";
+    html << "            \n";
+    html << "            const numTerminals = document.querySelector('input[name=\"numTerminals\"]:checked').value;\n";
+    html << "            ini += 'numTerminals=' + numTerminals + '\\n';\n";
+    html << "            \n";
+    html << "            for (let i = 0; i < 4; i++) {\n";
+    html << "                const enabled = i < numTerminals; // Enable based on number of terminals selected\n";
+    html << "                const port = document.getElementById('term' + (i+1) + '_port').value;\n";
+    html << "                const baud = document.getElementById('term' + (i+1) + '_baud').value;\n";
+    html << "                \n";
+    html << "                ini += 'terminal' + i + '_baud_rate=' + baud + '\\n';\n";
+    html << "                ini += 'terminal' + i + '_com_port=' + (enabled ? port : '') + '\\n';\n";
+    html << "                ini += 'terminal' + i + '_flow_control=0\\n';\n";
+    html << "                ini += 'terminal' + i + '_sw_flow_control=1\\n'; // Always enable XON/XOFF flow control\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            // Disk controller configuration (always enabled)\n";
+    html << "            {\n";
+    html << "                ini += '[wangemu/config-0/io/slot-1]\\n';\n";
+    html << "                ini += 'addr=0x310\\n';\n";
+    html << "                ini += 'type=6541\\n';\n";
+    html << "                \n";
+    html << "                for (let i = 0; i < 4; i++) {\n";
+    html << "                    const diskFile = document.getElementById('disk' + i + 'File').value;\n";
+    html << "                    ini += 'filename-' + i + '=' + (diskFile || '') + '\\n';\n";
+    html << "                }\n";
+    html << "                \n";
+    html << "                ini += '[wangemu/config-0/io/slot-1/cardcfg]\\n';\n";
+    html << "                ini += 'intelligence=' + document.getElementById('intelligence').value + '\\n';\n";
+    html << "                ini += 'numDrives=' + document.getElementById('numDrives').value + '\\n';\n";
+    html << "                ini += 'warnMismatch=' + (document.getElementById('warnMismatch').checked ? 'true' : 'false') + '\\n';\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            // Empty slots 2-7\n";
+    html << "            for (let slot = 2; slot <= 7; slot++) {\n";
+    html << "                ini += '[wangemu/config-0/io/slot-' + slot + ']\\n';\n";
+    html << "                ini += 'addr=\\n';\n";
+    html << "                ini += 'type=\\n';\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            ini += '[wangemu/config-0/misc]\\n';\n";
+    html << "            ini += 'disk_realtime=' + (document.getElementById('diskRealtime').checked ? '1' : '0') + '\\n';\n";
+    html << "            ini += 'warnio=' + (document.getElementById('warnInvalidIo').checked ? '1' : '0') + '\\n';\n";
+    html << "            \n";
+    html << "            return ini;\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        function loadConfigIntoForm(config) {\n";
+    html << "            // CPU and RAM\n";
+    html << "            if (config['wangemu/config-0/cpu']) {\n";
+    html << "                const cpuType = config['wangemu/config-0/cpu']['cpu'] || '2200MVP-C';\n";
+    html << "                const ramSize = config['wangemu/config-0/cpu']['memsize'] || '512';\n";
+    html << "                document.getElementById('cpu').value = cpuType;\n";
+    html << "                updateRamOptions(cpuType, ramSize);\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            // Misc settings\n";
+    html << "            if (config['wangemu/config-0/misc']) {\n";
+    html << "                const warnIo = config['wangemu/config-0/misc']['warnio'];\n";
+    html << "                document.getElementById('warnInvalidIo').checked = (warnIo === 'true' || warnIo === '1');\n";
+    html << "                const diskRealtime = config['wangemu/config-0/misc']['disk_realtime'];\n";
+    html << "                const isRealtime = (diskRealtime === 'true' || diskRealtime === '1' || diskRealtime === undefined); // default true\n";
+    html << "                document.getElementById('diskRealtime').checked = isRealtime;\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            // Terminal settings\n";
+    html << "            if (config['wangemu/config-0/io/slot-0/cardcfg']) {\n";
+    html << "                const cardcfg = config['wangemu/config-0/io/slot-0/cardcfg'];\n";
+    html << "                const numTerminals = cardcfg['numTerminals'] || '1';\n";
+    html << "                document.querySelector('input[name=\"numTerminals\"][value=\"' + numTerminals + '\"]').checked = true;\n";
+    html << "                \n";
+    html << "                for (let i = 0; i < 4; i++) {\n";
+    html << "                    const port = cardcfg['terminal' + i + '_com_port'] || '';\n";
+    html << "                    const baud = cardcfg['terminal' + i + '_baud_rate'] || '19200';\n";
+    html << "                    \n";
+    html << "                    document.getElementById('term' + (i+1) + '_port').value = port || '/dev/ttyUSB' + i;\n";
+    html << "                    document.getElementById('term' + (i+1) + '_baud').value = baud;\n";
+    html << "                }\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            // Disk controller settings\n";
+    html << "            if (config['wangemu/config-0/io/slot-1']) {\n";
+    html << "                const diskSlot = config['wangemu/config-0/io/slot-1'];\n";
+    html << "                // Disk controller is always enabled now, load configuration if available\n";
+    html << "                // Load disk file paths\n";
+    html << "                for (let i = 0; i < 4; i++) {\n";
+    html << "                    const diskFile = diskSlot['filename-' + i] || '';\n";
+    html << "                    document.getElementById('disk' + i + 'File').value = diskFile;\n";
+    html << "                }\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            // Disk controller card configuration\n";
+    html << "            if (config['wangemu/config-0/io/slot-1/cardcfg']) {\n";
+    html << "                const cardcfg = config['wangemu/config-0/io/slot-1/cardcfg'];\n";
+    html << "                const intelligence = cardcfg['intelligence'] || 'smart';\n";
+    html << "                const numDrives = cardcfg['numDrives'] || '2';\n";
+    html << "                const warnMismatch = cardcfg['warnMismatch'] === 'true';\n";
+    html << "                \n";
+    html << "                document.getElementById('intelligence').value = intelligence;\n";
+    html << "                document.getElementById('numDrives').value = numDrives;\n";
+    html << "                document.getElementById('warnMismatch').checked = warnMismatch;\n";
+    html << "            }\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        function loadConfig() {\n";
+    html << "            fetch('/api/config')\n";
+    html << "                .then(function(response) { return response.json(); })\n";
+    html << "                .then(function(data) {\n";
+    html << "                    if (data.error) {\n";
+    html << "                        showStatus('Error: ' + data.error, true);\n";
+    html << "                    } else {\n";
+    html << "                        currentConfig = parseIniConfig(data.iniContent);\n";
+    html << "                        loadConfigIntoForm(currentConfig);\n";
+    html << "                        updateDriveSlots(); // Update drive slots visibility\n";
+    html << "                        updateTerminalRows(); // Update terminal rows visibility\n";
+    html << "                        updateDiskStatus(); // Update disk button states\n";
+    html << "                        document.getElementById('rawConfigEditor').value = data.iniContent;\n";
+    html << "                        showStatus('Configuration loaded successfully');\n";
+    html << "                    }\n";
+    html << "                })\n";
+    html << "                .catch(function(error) {\n";
+    html << "                    showStatus('Error loading configuration: ' + error, true);\n";
+    html << "                });\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        function saveConfig() {\n";
+    html << "            const iniContent = generateIniConfig();\n";
+    html << "            const payload = JSON.stringify({ iniContent: iniContent });\n";
+    html << "            \n";
+    html << "            fetch('/api/config', {\n";
+    html << "                method: 'POST',\n";
+    html << "                headers: { 'Content-Type': 'application/json' },\n";
+    html << "                body: payload\n";
+    html << "            })\n";
+    html << "            .then(function(response) { return response.json(); })\n";
+    html << "            .then(function(data) {\n";
+    html << "                if (data.error) {\n";
+    html << "                    showStatus('Error: ' + data.error, true);\n";
+    html << "                } else {\n";
+    html << "                    showStatus('Configuration saved successfully');\n";
+    html << "                    document.getElementById('rawConfigEditor').value = iniContent;\n";
+    html << "                }\n";
+    html << "            })\n";
+    html << "            .catch(function(error) {\n";
+    html << "                showStatus('Error saving configuration: ' + error, true);\n";
+    html << "            });\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        function saveAndApplyConfig() {\n";
+    html << "            const iniContent = generateIniConfig();\n";
+    html << "            const payload = JSON.stringify({ iniContent: iniContent });\n";
+    html << "            \n";
+    html << "            // First save the configuration\n";
+    html << "            fetch('/api/config', {\n";
+    html << "                method: 'POST',\n";
+    html << "                headers: { 'Content-Type': 'application/json' },\n";
+    html << "                body: payload\n";
+    html << "            })\n";
+    html << "            .then(function(response) { return response.json(); })\n";
+    html << "            .then(function(data) {\n";
+    html << "                if (data.error) {\n";
+    html << "                    showStatus('Error saving: ' + data.error, true);\n";
+    html << "                } else {\n";
+    html << "                    showStatus('Configuration saved, applying changes...');\n";
+    html << "                    document.getElementById('rawConfigEditor').value = iniContent;\n";
+    html << "                    \n";
+    html << "                    // Then perform internal restart to apply changes\n";
+    html << "                    return fetch('/api/internal-restart', { method: 'POST' });\n";
+    html << "                }\n";
+    html << "            })\n";
+    html << "            .then(function(response) {\n";
+    html << "                if (response) {\n";
+    html << "                    return response.json();\n";
+    html << "                }\n";
+    html << "            })\n";
+    html << "            .then(function(data) {\n";
+    html << "                if (data && data.error) {\n";
+    html << "                    showStatus('Error applying configuration: ' + data.error, true);\n";
+    html << "                } else if (data) {\n";
+    html << "                    showStatus('Configuration applied successfully - system restarted internally!');\n";
+    html << "                }\n";
+    html << "            })\n";
+    html << "            .catch(function(error) {\n";
+    html << "                showStatus('Error: ' + error, true);\n";
+    html << "            });\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        function saveRawConfig() {\n";
+    html << "            const content = document.getElementById('rawConfigEditor').value;\n";
+    html << "            const payload = JSON.stringify({ iniContent: content });\n";
+    html << "            \n";
+    html << "            fetch('/api/config', {\n";
+    html << "                method: 'POST',\n";
+    html << "                headers: { 'Content-Type': 'application/json' },\n";
+    html << "                body: payload\n";
+    html << "            })\n";
+    html << "            .then(function(response) { return response.json(); })\n";
+    html << "            .then(function(data) {\n";
+    html << "                if (data.error) {\n";
+    html << "                    showStatus('Error: ' + data.error, true);\n";
+    html << "                } else {\n";
+    html << "                    showStatus('Raw configuration saved successfully');\n";
+    html << "                    loadConfig(); // Reload to update form\n";
+    html << "                }\n";
+    html << "            })\n";
+    html << "            .catch(function(error) {\n";
+    html << "                showStatus('Error saving raw configuration: ' + error, true);\n";
+    html << "            });\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        function reloadConfig() {\n";
+    html << "            if (!confirm('Reload configuration from INI file? This will apply the saved configuration to the running server without restarting.')) {\n";
+    html << "                return;\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            fetch('/api/reload', { method: 'POST' })\n";
+    html << "                .then(function(response) { return response.json(); })\n";
+    html << "                .then(function(data) {\n";
+    html << "                    if (data.error) {\n";
+    html << "                        showStatus('Error: ' + data.error, true);\n";
+    html << "                    } else {\n";
+    html << "                        showStatus('Configuration reloaded successfully - some changes may require restart to take effect');\n";
+    html << "                        loadConfig(); // Refresh the form with current config\n";
+    html << "                    }\n";
+    html << "                })\n";
+    html << "                .catch(function(error) {\n";
+    html << "                    showStatus('Error reloading configuration: ' + error, true);\n";
+    html << "                });\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        function restartSystem() {\n";
+    html << "            if (!confirm('Are you sure you want to restart the operating system? This will reboot the entire system.')) {\n";
+    html << "                return;\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            fetch('/api/restart', { method: 'POST' })\n";
+    html << "                .then(function(response) { return response.json(); })\n";
+    html << "                .then(function(data) {\n";
+    html << "                    if (data.error) {\n";
+    html << "                        showStatus('Error: ' + data.error, true);\n";
+    html << "                    } else {\n";
+    html << "                        showStatus('System is restarting - please wait...');\n";
+    html << "                    }\n";
+    html << "                })\n";
+    html << "                .catch(function(error) {\n";
+    html << "                    showStatus('Error restarting system: ' + error, true);\n";
+    html << "                });\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        function shutdownSystem() {\n";
+    html << "            if (!confirm('Are you sure you want to shutdown the operating system? This will power off the entire system.')) {\n";
+    html << "                return;\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            fetch('/api/shutdown', { method: 'POST' })\n";
+    html << "                .then(function(response) { return response.json(); })\n";
+    html << "                .then(function(data) {\n";
+    html << "                    if (data.error) {\n";
+    html << "                        showStatus('Error: ' + data.error, true);\n";
+    html << "                    } else {\n";
+    html << "                        showStatus('System is shutting down - goodbye!');\n";
+    html << "                    }\n";
+    html << "                })\n";
+    html << "                .catch(function(error) {\n";
+    html << "                    showStatus('Error shutting down system: ' + error, true);\n";
+    html << "                });\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        function toggleAdvanced() {\n";
+    html << "            const advancedDiv = document.getElementById('advancedConfig');\n";
+    html << "            const button = event.target;\n";
+    html << "            if (advancedDiv.style.display === 'none' || advancedDiv.style.display === '') {\n";
+    html << "                advancedDiv.style.display = 'block';\n";
+    html << "                button.textContent = 'Hide Advanced (Raw INI)';\n";
+    html << "            } else {\n";
+    html << "                advancedDiv.style.display = 'none';\n";
+    html << "                button.textContent = 'Show Advanced (Raw INI)';\n";
+    html << "            }\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        // Direct disk operations (like GUI)\n";
+    html << "        // Get current disk status and update UI\n";
+    html << "        function updateDiskStatus() {\n";
+    html << "            fetch('/api/disk-status')\n";
+    html << "            .then(function(response) { return response.json(); })\n";
+    html << "            .then(function(data) {\n";
+    html << "                if (data.error) {\n";
+    html << "                    showStatus('Error getting disk status: ' + data.error, true);\n";
+    html << "                    return;\n";
+    html << "                }\n";
+    html << "                \n";
+    html << "                for (let i = 0; i < data.drives.length; i++) {\n";
+    html << "                    const drive = data.drives[i];\n";
+    html << "                    const button = document.getElementById('disk' + i + 'Button');\n";
+    html << "                    const status = document.getElementById('disk' + i + 'Status');\n";
+    html << "                    \n";
+    html << "                    if (!drive.exists) {\n";
+    html << "                        button.disabled = true;\n";
+    html << "                        button.textContent = 'N/A';\n";
+    html << "                        button.className = 'btn secondary';\n";
+    html << "                        status.textContent = 'Drive not available';\n";
+    html << "                        status.style.color = '#999';\n";
+    html << "                    } else if (drive.occupied) {\n";
+    html << "                        button.disabled = drive.busy;\n";
+    html << "                        button.textContent = drive.busy ? 'Busy...' : 'Remove';\n";
+    html << "                        button.className = drive.busy ? 'btn secondary' : 'btn danger';\n";
+    html << "                        status.textContent = drive.busy ? 'Busy' : 'Inserted';\n";
+    html << "                        status.style.color = drive.busy ? '#ff9900' : '#008000';\n";
+    html << "                    } else {\n";
+    html << "                        button.disabled = false;\n";
+    html << "                        button.textContent = 'Insert';\n";
+    html << "                        button.className = 'btn secondary';\n";
+    html << "                        status.textContent = '';\n";
+    html << "                        status.style.color = '#666';\n";
+    html << "                    }\n";
+    html << "                }\n";
+    html << "            })\n";
+    html << "            .catch(function(error) {\n";
+    html << "                showStatus('Error getting disk status: ' + error, true);\n";
+    html << "            });\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        function toggleDisk(slot, drive) {\n";
+    html << "            const button = document.getElementById('disk' + drive + 'Button');\n";
+    html << "            const isInsert = button.textContent === 'Insert';\n";
+    html << "            \n";
+    html << "            if (isInsert) {\n";
+    html << "                insertDisk(slot, drive);\n";
+    html << "            } else {\n";
+    html << "                removeDisk(slot, drive);\n";
+    html << "            }\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        function insertDisk(slot, drive) {\n";
+    html << "            const fileInput = document.getElementById('disk' + drive + 'File');\n";
+    html << "            const filename = fileInput.value.trim();\n";
+    html << "            if (!filename) {\n";
+    html << "                showStatus('Please enter a disk file path first', true);\n";
+    html << "                return;\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            const payload = JSON.stringify({ slot: slot, drive: drive, filename: filename });\n";
+    html << "            const statusSpan = document.getElementById('disk' + drive + 'Status');\n";
+    html << "            statusSpan.textContent = 'Inserting...';\n";
+    html << "            statusSpan.style.color = '#666';\n";
+    html << "            \n";
+    html << "            fetch('/api/disk-insert', {\n";
+    html << "                method: 'POST',\n";
+    html << "                headers: { 'Content-Type': 'application/json' },\n";
+    html << "                body: payload\n";
+    html << "            })\n";
+    html << "            .then(function(response) { return response.json(); })\n";
+    html << "            .then(function(data) {\n";
+    html << "                if (data.error) {\n";
+    html << "                    showStatus('Error inserting disk: ' + data.error, true);\n";
+    html << "                } else {\n";
+    html << "                    showStatus('Disk inserted successfully');\n";
+    html << "                }\n";
+    html << "                updateDiskStatus(); // Refresh UI state\n";
+    html << "            })\n";
+    html << "            .catch(function(error) {\n";
+    html << "                showStatus('Error inserting disk: ' + error, true);\n";
+    html << "                updateDiskStatus(); // Refresh UI state\n";
+    html << "            });\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        function removeDisk(slot, drive) {\n";
+    html << "            if (!confirm('Are you sure you want to remove the disk from drive ' + (drive + 1) + '?')) {\n";
+    html << "                return;\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            const payload = JSON.stringify({ slot: slot, drive: drive });\n";
+    html << "            const statusSpan = document.getElementById('disk' + drive + 'Status');\n";
+    html << "            statusSpan.textContent = 'Removing...';\n";
+    html << "            statusSpan.style.color = '#666';\n";
+    html << "            \n";
+    html << "            fetch('/api/disk-remove', {\n";
+    html << "                method: 'POST',\n";
+    html << "                headers: { 'Content-Type': 'application/json' },\n";
+    html << "                body: payload\n";
+    html << "            })\n";
+    html << "            .then(function(response) { return response.json(); })\n";
+    html << "            .then(function(data) {\n";
+    html << "                if (data.error) {\n";
+    html << "                    showStatus('Error removing disk: ' + data.error, true);\n";
+    html << "                } else {\n";
+    html << "                    showStatus('Disk removed successfully');\n";
+    html << "                    document.getElementById('disk' + drive + 'File').value = '';\n";
+    html << "                }\n";
+    html << "                updateDiskStatus(); // Refresh UI state\n";
+    html << "            })\n";
+    html << "            .catch(function(error) {\n";
+    html << "                showStatus('Error removing disk: ' + error, true);\n";
+    html << "                updateDiskStatus(); // Refresh UI state\n";
+    html << "            });\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        // Toggle disk speed immediately (like original GUI)\n";
+    html << "        function toggleDiskSpeed() {\n";
+    html << "            const checkbox = document.getElementById('diskRealtime');\n";
+    html << "            const realtime = checkbox.checked;\n";
+    html << "            \n";
+    html << "            const payload = JSON.stringify({ realtime: realtime });\n";
+    html << "            \n";
+    html << "            fetch('/api/disk-speed-toggle', {\n";
+    html << "                method: 'POST',\n";
+    html << "                headers: { 'Content-Type': 'application/json' },\n";
+    html << "                body: payload\n";
+    html << "            })\n";
+    html << "            .then(function(response) { return response.json(); })\n";
+    html << "            .then(function(data) {\n";
+    html << "                if (data.error) {\n";
+    html << "                    showStatus('Error setting disk speed: ' + data.error, true);\n";
+    html << "                    // Revert checkbox if there was an error\n";
+    html << "                    checkbox.checked = !realtime;\n";
+    html << "                } else {\n";
+    html << "                    showStatus('Disk speed set to ' + (realtime ? 'realtime' : 'unregulated') + ' mode');\n";
+    html << "                }\n";
+    html << "            })\n";
+    html << "            .catch(function(error) {\n";
+    html << "                showStatus('Error setting disk speed: ' + error, true);\n";
+    html << "                // Revert checkbox if there was an error\n";
+    html << "                checkbox.checked = !realtime;\n";
+    html << "            });\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        // Function to update RAM options based on CPU type (matching GUI behavior)\n";
+    html << "        function updateRamOptions(cpuType, selectedRam) {\n";
+    html << "            const ramSelect = document.getElementById('ram');\n";
+    html << "            ramSelect.innerHTML = ''; // Clear existing options\n";
+    html << "            \n";
+    html << "            // Define RAM options for each CPU type (matches system2200.cpp)\n";
+    html << "            const ramOptions = {\n";
+    html << "                '2200B': [4, 8, 12, 16, 24, 32],\n";
+    html << "                '2200T': [8, 16, 24, 32],\n";
+    html << "                '2200VP': [16, 32, 48, 64],\n";
+    html << "                '2200MVP-C': [32, 64, 128, 256, 512],\n";
+    html << "                'MicroVP': [128, 512, 1024, 2048, 4096, 8192]\n";
+    html << "            };\n";
+    html << "            \n";
+    html << "            const availableRam = ramOptions[cpuType] || ramOptions['2200MVP-C'];\n";
+    html << "            \n";
+    html << "            // Add options to dropdown\n";
+    html << "            for (const ramSize of availableRam) {\n";
+    html << "                const option = document.createElement('option');\n";
+    html << "                option.value = ramSize;\n";
+    html << "                if (ramSize < 1024) {\n";
+    html << "                    option.textContent = ramSize + ' KB';\n";
+    html << "                } else {\n";
+    html << "                    option.textContent = (ramSize / 1024) + ' MB';\n";
+    html << "                }\n";
+    html << "                ramSelect.appendChild(option);\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            // Try to select the previously selected RAM size if valid\n";
+    html << "            if (selectedRam && ramSelect.querySelector(`option[value=\"${selectedRam}\"]`)) {\n";
+    html << "                ramSelect.value = selectedRam;\n";
+    html << "            } else {\n";
+    html << "                // If not valid, select the largest available RAM size\n";
+    html << "                ramSelect.value = availableRam[availableRam.length - 1];\n";
+    html << "            }\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        // Function to update drive slot visibility based on selected number of drives\n";
+    html << "        function updateDriveSlots() {\n";
+    html << "            const numDrives = parseInt(document.getElementById('numDrives').value);\n";
+    html << "            \n";
+    html << "            // Hide all drive slots first\n";
+    html << "            for (let i = 0; i < 4; i++) {\n";
+    html << "                document.getElementById('driveSlot' + i).style.display = 'none';\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            // Show only the selected number of drives\n";
+    html << "            for (let i = 0; i < numDrives; i++) {\n";
+    html << "                document.getElementById('driveSlot' + i).style.display = 'block';\n";
+    html << "            }\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        // Function to update terminal visibility based on selected number of terminals\n";
+    html << "        function updateTerminalRows() {\n";
+    html << "            const numTerminals = parseInt(document.querySelector('input[name=\"numTerminals\"]:checked').value);\n";
+    html << "            \n";
+    html << "            // Hide all terminal rows first\n";
+    html << "            for (let i = 0; i < 4; i++) {\n";
+    html << "                document.getElementById('terminalRow' + i).style.display = 'none';\n";
+    html << "            }\n";
+    html << "            \n";
+    html << "            // Show only the selected number of terminals\n";
+    html << "            for (let i = 0; i < numTerminals; i++) {\n";
+    html << "                document.getElementById('terminalRow' + i).style.display = 'grid';\n";
+    html << "            }\n";
+    html << "        }\n";
+    html << "        \n";
+    html << "        // Load configuration on page load\n";
+    html << "        loadConfig();\n";
+    html << "        \n";
+    html << "        // Add event listener to number of drives dropdown\n";
+    html << "        document.getElementById('numDrives').addEventListener('change', updateDriveSlots);\n";
+    html << "        \n";
+    html << "        // Add event listeners to number of terminals radio buttons\n";
+    html << "        document.querySelectorAll('input[name=\"numTerminals\"]').forEach(function(radio) {\n";
+    html << "            radio.addEventListener('change', updateTerminalRows);\n";
+    html << "        });\n";
+    html << "        \n";
+    html << "        // Add event listener to CPU dropdown to update RAM options\n";
+    html << "        document.getElementById('cpu').addEventListener('change', function() {\n";
+    html << "            const selectedCpu = this.value;\n";
+    html << "            const currentRam = document.getElementById('ram').value;\n";
+    html << "            updateRamOptions(selectedCpu, currentRam);\n";
+    html << "        });\n";
+    html << "        \n";
+    html << "        // Add event listener to disk realtime checkbox for immediate toggle\n";
+    html << "        document.getElementById('diskRealtime').addEventListener('change', toggleDiskSpeed);\n";
+    html << "        \n";
+    html << "        // Initial updates\n";
+    html << "        updateDriveSlots();\n";
+    html << "        updateTerminalRows();\n";
+    html << "        updateRamOptions('2200MVP-C', '512'); // Initialize with default values\n";
+    html << "        updateDiskStatus();\n";
+    html << "    </script>\n";
+    html << "</body>\n";
+    html << "</html>\n";
+    
+    response.body = html.str();
+    return response;
+}
+
+WebConfigServer::HttpResponse WebConfigServer::serveStaticFile(const std::string& path) {
+    HttpResponse response;
+    response.status = 404;
+    response.body = "Static files not implemented";
+    return response;
+}
+
+WebConfigServer::HttpRequest WebConfigServer::parseRequest(const std::string& requestData) {
+    HttpRequest request;
+    std::istringstream stream(requestData);
+    std::string line;
+    
+    // Parse request line
+    if (std::getline(stream, line)) {
+        std::istringstream lineStream(line);
+        std::string path_with_query;
+        lineStream >> request.method >> path_with_query;
+        
+        // Split path and query string
+        size_t queryPos = path_with_query.find('?');
+        if (queryPos != std::string::npos) {
+            request.path = path_with_query.substr(0, queryPos);
+            request.query = path_with_query.substr(queryPos + 1);
+        } else {
+            request.path = path_with_query;
+        }
+    }
+    
+    // Parse headers
+    while (std::getline(stream, line) && line != "\r" && !line.empty()) {
+        size_t colonPos = line.find(':');
+        if (colonPos != std::string::npos) {
+            std::string key = line.substr(0, colonPos);
+            std::string value = line.substr(colonPos + 1);
+            
+            // Trim whitespace
+            while (!key.empty() && std::isspace(key.back())) key.pop_back();
+            while (!value.empty() && std::isspace(value.front())) value.erase(0, 1);
+            while (!value.empty() && std::isspace(value.back())) value.pop_back();
+            
+            request.headers[key] = value;
+        }
+    }
+    
+    // Read body (remaining data)
+    std::string body;
+    std::string bodyLine;
+    while (std::getline(stream, bodyLine)) {
+        if (!body.empty()) body += "\n";
+        body += bodyLine;
+    }
+    request.body = body;
+    
+    return request;
+}
+
+std::string WebConfigServer::formatResponse(const HttpResponse& response) {
+    std::ostringstream stream;
+    
+    stream << "HTTP/1.1 " << response.status;
+    switch (response.status) {
+        case 200: stream << " OK"; break;
+        case 400: stream << " Bad Request"; break;
+        case 404: stream << " Not Found"; break;
+        case 405: stream << " Method Not Allowed"; break;
+        case 500: stream << " Internal Server Error"; break;
+        case 501: stream << " Not Implemented"; break;
+        default: stream << " Unknown"; break;
+    }
+    stream << "\r\n";
+    
+    // Add headers
+    stream << "Content-Length: " << response.body.length() << "\r\n";
+    stream << "Connection: close\r\n";
+    
+    for (const auto& header : response.headers) {
+        stream << header.first << ": " << header.second << "\r\n";
+    }
+    
+    stream << "\r\n" << response.body;
+    
+    return stream.str();
+}
+
+std::string WebConfigServer::readIniFile() {
+    std::ifstream file(m_iniPath);
+    if (!file.is_open()) {
+        std::cerr << "[WARN] Could not open INI file: " << m_iniPath << "\n";
+        return "";
+    }
+    
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    return buffer.str();
+}
+
+bool WebConfigServer::writeIniFile(const std::string& content) {
+    std::ofstream file(m_iniPath);
+    if (!file.is_open()) {
+        std::cerr << "[ERROR] Could not write to INI file: " << m_iniPath << "\n";
+        return false;
+    }
+    
+    file << content;
+    return file.good();
+}
+
+bool WebConfigServer::validateIniContent(const std::string& content) {
+    // Basic validation - check for required sections
+    if (content.find("[wangemu]") == std::string::npos) {
+        return false;
+    }
+    
+    // Could add more validation here
+    return true;
+}

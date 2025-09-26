@@ -1,0 +1,124 @@
+// Although the IoCard class is abstract for the most part,
+// these factory functions live here
+
+#include "../../shared/config/CardCfgState.h"
+#include "../cpu/Cpu2200.h"
+#include "../disk/DiskCtrlCfgState.h"
+#include "IoCardDisk.h"
+#include "IoCardTermMux.h"  // Terminal mux needed in both GUI and terminal server builds
+#ifndef HEADLESS_BUILD
+#include "../../gui/widgets/IoCardDisplay.h"
+#endif
+#include "IoCardKeyboard.h"
+#ifndef HEADLESS_BUILD
+#include "../../gui/widgets/IoCardPrinter.h"
+#endif
+#include "../system/Scheduler.h"
+#include "../../shared/config/SysCfgState.h"
+#include "../../gui/system/Ui.h"
+#include "../../platform/common/host.h"
+
+// ------------------------------------------------------------------------
+// until C++17, storage must be declared outside the class too
+// ------------------------------------------------------------------------
+
+const IoCard::card_t IoCard::card_types[IoCard::NUM_CARDTYPES] = {
+    IoCard::card_t::keyboard,
+    IoCard::card_t::disp_64x16,
+    IoCard::card_t::disp_80x24,
+    IoCard::card_t::term_mux,
+    IoCard::card_t::printer,
+    IoCard::card_t::disk
+};
+
+// ========================================================================
+// card management functions (used by UI)
+// ========================================================================
+
+// create an instance of the specified card
+std::unique_ptr<IoCard>
+IoCard::makeCard(std::shared_ptr<Scheduler> scheduler,
+                 std::shared_ptr<Cpu2200>   cpu,
+                 card_t type,
+                 int base_addr, int card_slot, const CardCfgState *cfg)
+{
+    return makeCardImpl(scheduler, cpu, type, base_addr, card_slot, cfg);
+}
+
+
+// make a temporary card; this is so code can query the properties of the card;
+// as such, the IoCard* functions know to do only partial construction
+std::unique_ptr<IoCard>
+IoCard::makeTmpCard(card_t type, int base_addr)
+{
+    std::shared_ptr<Scheduler> dummy_scheduler{nullptr};
+    std::shared_ptr<Cpu2200t>  dummy_cpu{nullptr};
+    CardCfgState const * const dummy_config{nullptr};
+
+    return makeCardImpl(dummy_scheduler,
+                        dummy_cpu,
+                        type, base_addr, -1,
+                        dummy_config);
+}
+
+
+// this is the shared implementation that the other make*Card functions use
+std::unique_ptr<IoCard>
+IoCard::makeCardImpl(std::shared_ptr<Scheduler> scheduler,
+                     std::shared_ptr<Cpu2200>   cpu,
+                     card_t type, int base_addr, int card_slot,
+                     const CardCfgState *cfg)
+{
+    std::unique_ptr<IoCard> crd{nullptr};
+
+    switch (type) {
+        case card_t::keyboard:
+            crd = std::make_unique<IoCardKeyboard>(
+                            scheduler, cpu, base_addr, card_slot);
+            break;
+#ifndef HEADLESS_BUILD
+        case card_t::disp_64x16:
+            crd = std::make_unique<IoCardDisplay>(
+                            scheduler, cpu,
+                            base_addr, card_slot, UI_SCREEN_64x16);
+            break;
+        case card_t::disp_80x24:
+            crd = std::make_unique<IoCardDisplay>(
+                            scheduler, cpu,
+                            base_addr, card_slot, UI_SCREEN_80x24);
+            break;
+        case card_t::term_mux:
+            crd = std::make_unique<IoCardTermMux>(
+                            scheduler, cpu, base_addr, card_slot, cfg);
+            break;
+#else
+        case card_t::disp_64x16:
+        case card_t::disp_80x24:
+            // Display cards silently ignored in terminal server build
+            return nullptr;
+        case card_t::term_mux:
+            crd = std::make_unique<IoCardTermMux>(
+                            scheduler, cpu, base_addr, card_slot, cfg);
+            break;
+#endif
+        case card_t::printer:
+#ifdef HEADLESS_BUILD
+            // Printer cards silently ignored in terminal server build
+            return nullptr;
+#else
+            crd = std::make_unique<IoCardPrinter>(cpu, base_addr, card_slot);
+            break;
+#endif
+        case card_t::disk:
+            crd = std::make_unique<IoCardDisk>(
+                            scheduler, cpu, base_addr, card_slot, cfg);
+            break;
+        default:
+            assert(false);
+            break;
+    }
+
+    return crd;
+}
+
+// vim: ts=8:et:sw=4:smarttab
