@@ -1,0 +1,133 @@
+# Terminal server makefile for wangemu
+# This builds wangemu without wxWidgets dependencies for use as a terminal server
+#
+# make targets:
+#
+# make -f makefile.terminal-server         -- shorthand for "make -f makefile.terminal-server debug"
+# make -f makefile.terminal-server debug   -- non-optimized terminal server build
+# make -f makefile.terminal-server opt     -- optimized terminal server build
+# make -f makefile.terminal-server clean   -- remove all build products
+
+.PHONY: debug opt clean
+
+# Add .d to Make's recognized suffixes.
+.SUFFIXES: .c .cpp .d .o
+
+# don't create dependency files for these targets
+NODEPS := clean
+
+# Project root paths (makefile is now in project root)
+SRCDIR := ./src
+OBJDIR := ./obj_terminal_server
+
+# Core source files (platform independent)
+CORE_CPP_SOURCES := \
+    $(SRCDIR)/core/cpu/Cpu2200t.cpp \
+    $(SRCDIR)/core/cpu/Cpu2200vp.cpp \
+    $(SRCDIR)/core/cpu/ucode_2200B.cpp \
+    $(SRCDIR)/core/cpu/ucode_2200T.cpp \
+    $(SRCDIR)/core/cpu/ucode_boot_vp.cpp \
+    $(SRCDIR)/core/disk/DiskCtrlCfgState.cpp \
+    $(SRCDIR)/core/disk/Wvd.cpp \
+    $(SRCDIR)/core/io/IoCard.cpp \
+    $(SRCDIR)/core/io/IoCardDisk.cpp \
+    $(SRCDIR)/core/io/IoCardDisk_Controller.cpp \
+    $(SRCDIR)/core/io/IoCardKeyboard.cpp \
+    $(SRCDIR)/core/io/IoCardTermMux.cpp \
+    $(SRCDIR)/core/system/error_table.cpp \
+    $(SRCDIR)/core/system/Scheduler.cpp \
+    $(SRCDIR)/core/system/system2200.cpp \
+    $(SRCDIR)/core/util/dasm.cpp \
+    $(SRCDIR)/core/util/dasm_vp.cpp
+
+# Platform-specific sources for headless/POSIX
+PLATFORM_CPP_SOURCES := \
+    $(SRCDIR)/platform/common/SerialPort.cpp \
+    $(SRCDIR)/platform/posix/host_headless.cpp
+
+# Shared configuration and script files
+SHARED_CPP_SOURCES := \
+    $(SRCDIR)/shared/config/CardInfo.cpp \
+    $(SRCDIR)/shared/config/SysCfgState.cpp \
+    $(SRCDIR)/shared/config/TermMuxCfgState.cpp \
+    $(SRCDIR)/shared/script/ScriptFile.cpp \
+    $(SRCDIR)/shared/terminal/Terminal.cpp
+
+# Headless-specific files
+HEADLESS_CPP_SOURCES := \
+    $(SRCDIR)/headless/main/main_headless.cpp \
+    $(SRCDIR)/headless/main/UiHeadless.cpp \
+    $(SRCDIR)/headless/session/SerialTermSession.cpp \
+    $(SRCDIR)/headless/terminal/TerminalServerConfig.cpp \
+    $(SRCDIR)/headless/terminal/WebConfigServer.cpp
+
+# C source files
+C_SOURCES := \
+    $(SRCDIR)/core/cpu/i8080.c \
+    $(SRCDIR)/core/cpu/i8080_dasm.c
+
+# Combine all sources
+ALL_CPP_SOURCES := $(CORE_CPP_SOURCES) $(PLATFORM_CPP_SOURCES) $(SHARED_CPP_SOURCES) $(HEADLESS_CPP_SOURCES)
+
+# These are the dependency files, which make will clean up after it creates them
+DEPFILES := $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.d,$(ALL_CPP_SOURCES)) \
+            $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.d,$(C_SOURCES))
+
+OBJFILES := $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.o,$(ALL_CPP_SOURCES)) \
+            $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(C_SOURCES))
+
+# debug build
+debug: OPTFLAGS := -g -O0
+debug: ./wangemu-terminal-server
+
+# optimized build
+opt: OPTFLAGS := -O2
+opt: ./wangemu-terminal-server
+
+# Compiler settings for headless build (no wxWidgets)
+CXX         := g++
+CXXFLAGS    := -std=c++14 -fno-common -pthread -DHEADLESS_BUILD
+CXXWARNINGS := -Wall -Wextra -Wshadow -Wformat -Wundef -Wstrict-aliasing=1 \
+               -Wno-deprecated-declarations \
+               -Wno-ctor-dtor-privacy -Woverloaded-virtual
+LDFLAGS     := -pthread
+
+# Create the executable
+./wangemu-terminal-server: $(OBJFILES)
+	$(CXX) -o $@ $(OBJFILES) $(LDFLAGS)
+
+# Include all the dependency files
+ifneq ($(MAKECMDGOALS),clean)
+ifneq ($(strip $(DEPFILES)),)
+-include $(DEPFILES)
+endif
+endif
+
+# This is the rule for creating the dependency files
+$(OBJDIR)/%.d: $(SRCDIR)/%.cpp
+	@mkdir -p $(dir $@)
+	@echo "Making dependency $@ from $<"
+	@$(CXX) $(CXXFLAGS) $(OPTFLAGS) $(CXXWARNINGS) -MM -MF $@ -MT $(OBJDIR)/$*.o $<
+
+$(OBJDIR)/%.d: $(SRCDIR)/%.c
+	@mkdir -p $(dir $@)
+	@echo "Making dependency $@ from $<"
+	@$(CXX) $(CXXFLAGS) $(OPTFLAGS) $(CXXWARNINGS) -MM -MF $@ -MT $(OBJDIR)/$*.o $<
+
+# This is the rule for compiling the source files
+$(OBJDIR)/%.o: $(SRCDIR)/%.cpp
+	@mkdir -p $(dir $@)
+	@echo "Compiling $<"
+	$(CXX) -c $(CXXFLAGS) $(OPTFLAGS) $(CXXWARNINGS) -o $@ $<
+
+$(OBJDIR)/%.o: $(SRCDIR)/%.c  
+	@mkdir -p $(dir $@)
+	@echo "Compiling $<"
+	$(CXX) -c $(CXXFLAGS) $(OPTFLAGS) $(CXXWARNINGS) -o $@ $<
+
+clean:
+	@echo "Cleaning terminal server build artifacts"
+	@rm -rf $(OBJDIR)
+	@rm -f ./wangemu-terminal-server
+
+# vim: ts=8:et:sw=4:smarttab

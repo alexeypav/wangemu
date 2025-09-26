@@ -1,22 +1,36 @@
 # Modified Wang Emulator
 
-This is a modified version of wangemu, forked from [jtbattle/wangemu](https://github.com/jtbattle/wangemu).
+This is a modified version of the original wangemu, forked from [jtbattle/wangemu](https://github.com/jtbattle/wangemu), added support for connecting terminals over the host's serial ports (Terminal Server) and running on linux without gui/wxwidget dependencies.
 
-## Additional Features
+For the GUI/Original version; added a Terminal mode (select the 2336DW in the CPU menu) to use the host's serial ports to connect to a real Wang2200 system
+
+
+## Run this on a Raspberry PI and connect a real Wang 2x36 terminal
+* Build the ARM version on linux (see below for build instructions)
+* Copy over the binary to the Raspberry Pi
+* Plug in your serial adapters and connect terminal/s, up to 4 should work
+* Run the executable `./wangemu-terminal-server-aarch64 --web-config`
+* Initial config is 1 terminal and using /dev/ttyUSB0 - if you have a terminal connected there it should work already
+* Configure the setup via web - http://<ip or hostname of the Pi>:8080 - click apply and reset
+* Settings should apply, any extra terminals should come up
+* For information on configuration, check the original documentation [emu.html](http://www.wang2200.org/emu.html)
+* wangemu.ini manual configuration should work the same, you will need to stop the emulator first otherwise it'll overwrite the .ini file on exit
+* For automatic startup on boot, copy over the setup-startup.sh and start-wangemu.sh script, run sudo ./setup-startup.sh 
+
+## Terminal Server Version
+
+- **Serial communication** - connect multiple physical Wang 2X36 terminals via tty or windows com ports - I've had good results using the Unitek usb -> serial adaptors
+- **ARM64 support** - includes ARM build for Raspberry Pi, tested on Raspbian OS on a Pi Zero 2
+- **Configuration** - Added a web-based configuration interface for basic config - INI file config works as before too
+
+## Windows added Emulator Features
 
 - **Serial communication** over the host's COM ports
 - **Terminal emulation** - use the emulator as a Wang terminal connected to a real Wang 2200 system  
 - **Physical terminal support** - connect a Wang terminal via the host's COM port to the emulator
 
-## Compatibility
+> **Disclaimer**: I used AI assistance quite extensively, otherwise this wouldn't be possible or would take me "years" to do this.
 
-- **Hardware tested**: Wang 2336DW Terminal and Wang MicroVP System
-- **Platform support**: Windows only (for serial communication features)
-- **Tested on**: Windows 10
-
-> **Note**: Serial communication features are implemented with AI assistance (It would have taken me way too long to do this myself). I can't comment on the quality of the code but it's working mostly, there are some issues with serial communication speed from my testing, terminal not able to process in time, maybe the software flow control isn't quite working yet as needed.
-
-- See updated build instructions at the bottom.
 
 
 Wang 2200 Emulator
@@ -70,7 +84,6 @@ the website's [emu.html](http://www.wang2200.org/emu.html) page.
 
 Building on Windows
 ----------
-This project uses **static linking** with wxWidgets 3.1.7 to create standalone executables that require no external DLLs. Follow these steps:
 
 ### Prerequisites
 - Visual Studio 2019 or later with C++ development tools
@@ -146,6 +159,32 @@ del Debug\*.obj Debug\*.pdb Debug\*.pch
 - **"Cannot open include file: 'wx/setup.h'"**: wxWidgets not built yet - run step 3
 - **Runtime library mismatch errors**: Ensure `RUNTIME_LIBS=static` was used in step 3
 - **"target does not exist" errors**: Clean completely and rebuild from step 3
+
+Building on Linux
+----------
+
+### GUI Version (requires wxWidgets)
+```bash
+# Install wxWidgets development packages
+sudo apt update
+sudo apt install libwxgtk3.0-gtk3-dev build-essential
+
+# Build GUI emulator
+make debug
+```
+
+### Terminal Server (headless, no GUI dependencies)
+```bash
+# Build x86_64 terminal server
+make -f makefile.terminal-server
+
+# Build ARM64 for Raspberry Pi (requires cross-compiler)
+sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+make -f makefile.terminal-server-aarch64
+
+# Run terminal server
+./wangemu-terminal-server --web-config
+```
 
 License
 ----------
