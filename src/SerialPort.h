@@ -61,6 +61,7 @@ struct SerialConfig {
     ParityType parity;          // NOPARITY, ODDPARITY, EVENPARITY
     bool hwFlowControl;         // Hardware flow control (RTS/CTS) - not used for Wang terminals
     bool swFlowControl;         // Software flow control (XON/XOFF) - recommended for Wang terminals
+    size_t txQueueSize;         // TX queue size in bytes (default: 8192)
     
     SerialConfig() :
 #ifdef _WIN32
@@ -73,7 +74,8 @@ struct SerialConfig {
         stopBits(ONESTOPBIT),
         parity(ODDPARITY),
         hwFlowControl(false),   // Disable hardware flow control by default
-        swFlowControl(false)    // Disable software flow control by default
+        swFlowControl(false),   // Disable software flow control by default
+        txQueueSize(8192)       // 8KB TX queue for high-output scenarios
     {}
 };
 
@@ -98,6 +100,11 @@ public:
     void sendByte(uint8 byte);
     void sendData(const uint8 *data, size_t length);
     
+    // Application-level flow control (XON/XOFF)
+    void sendXON();
+    void sendXOFF();
+    bool isXOFFSent() const { return m_xoffSent.load(); }
+    
     // Receive callback for MXD integration
     using RxCallback = std::function<void(uint8)>;
     void setReceiveCallback(RxCallback cb);
@@ -106,6 +113,12 @@ public:
     uint64_t getRxByteCount() const { return m_rxByteCount.load(); }
     uint64_t getTxByteCount() const { return m_txByteCount.load(); }
     void resetCounters() { m_rxByteCount.store(0); m_txByteCount.store(0); }
+    
+    // TX queue status for backpressure handling
+    size_t getTxQueueSize() const;
+    size_t getTxQueueCapacity() const { return m_config.txQueueSize; }
+    bool isTxQueueNearFull(float threshold = 0.8f) const;  // Check if TX queue is at threshold% full
+    void flushTxQueue();  // Clear TX queue without sending (for shutdown)
     
     // Connection status
     bool isConnected() const { return m_connected.load(); }
@@ -152,20 +165,25 @@ private:
 
     // Transmit queue and timing (model serial UART delays)
     std::queue<uint8> m_txQueue;
-    std::recursive_mutex m_txMutex;
+    mutable std::recursive_mutex m_txMutex;  // mutable for const methods
     std::shared_ptr<Timer> m_txTimer;
     bool m_txBusy;
 
     // Configuration
     SerialConfig m_config;
     
-    // Statistics counters (thread-safe)
-    std::atomic<uint64_t> m_rxByteCount{0};
-    std::atomic<uint64_t> m_txByteCount{0};
+    // Statistics counters (thread-safe) - ensure proper alignment for ARM64
+    alignas(std::atomic<uint64_t>) std::atomic<uint64_t> m_rxByteCount{0};
+    alignas(std::atomic<uint64_t>) std::atomic<uint64_t> m_txByteCount{0};
+    
+    // Application-level flow control state
+    alignas(std::atomic<bool>) std::atomic<bool> m_xoffSent{false};
+    alignas(std::atomic<uint64_t>) std::atomic<uint64_t> m_xonSentCount{0};
+    alignas(std::atomic<uint64_t>) std::atomic<uint64_t> m_xoffSentCount{0};
     
     // Reconnection state
-    std::atomic<bool> m_connected{false};
-    std::atomic<int> m_reconnectAttempts{0};
+    alignas(std::atomic<bool>) std::atomic<bool> m_connected{false};
+    alignas(std::atomic<int>) std::atomic<int> m_reconnectAttempts{0};
     std::chrono::steady_clock::time_point m_lastReconnectAttempt;
     static constexpr int MAX_RECONNECT_ATTEMPTS = 10;
     static constexpr int BASE_RECONNECT_DELAY_MS = 250;

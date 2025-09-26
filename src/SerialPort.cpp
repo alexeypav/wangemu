@@ -221,9 +221,8 @@ void SerialPort::sendByte(uint8 byte)
 
     std::lock_guard<std::recursive_mutex> lock(m_txMutex);
 
-    // simple backpressure cap
-    constexpr size_t MAX_TX_QUEUE = 512;
-    if (m_txQueue.size() >= MAX_TX_QUEUE) {
+    // Use configurable TX queue size
+    if (m_txQueue.size() >= m_config.txQueueSize) {
         dbglog("SerialPort::sendByte() - TX queue full (%u), drop 0x%02X\n",
                (unsigned)m_txQueue.size(), byte);
         return;
@@ -242,6 +241,36 @@ void SerialPort::sendByte(uint8 byte)
 void SerialPort::sendData(const uint8 *data, size_t length)
 {
     for (size_t i=0; i<length; ++i) sendByte(data[i]);
+}
+
+void SerialPort::sendXON()
+{
+    if (m_xoffSent.load()) {
+        sendByte(0x11); // DC1 (XON)
+        m_xoffSent.store(false);
+        m_xonSentCount.fetch_add(1);
+        
+        // Capture for debugging if enabled
+        if (m_captureCallback) {
+            // Log this as a special flow control event
+            dbglog("SerialPort::sendXON() - Sending XON to %s\n", m_config.portName.c_str());
+        }
+    }
+}
+
+void SerialPort::sendXOFF()
+{
+    if (!m_xoffSent.load()) {
+        sendByte(0x13); // DC3 (XOFF)
+        m_xoffSent.store(true);
+        m_xoffSentCount.fetch_add(1);
+        
+        // Capture for debugging if enabled
+        if (m_captureCallback) {
+            // Log this as a special flow control event
+            dbglog("SerialPort::sendXOFF() - Sending XOFF to %s\n", m_config.portName.c_str());
+        }
+    }
 }
 
 void SerialPort::startReceiving()
@@ -418,6 +447,28 @@ int64 SerialPort::calculateTransmitDelay() const
 bool SerialPort::isOpen() const 
 {
     return m_handle != INVALID_HANDLE_VALUE;
+}
+
+size_t SerialPort::getTxQueueSize() const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_txMutex);
+    return m_txQueue.size();
+}
+
+bool SerialPort::isTxQueueNearFull(float threshold) const
+{
+    size_t current_size = getTxQueueSize();
+    return current_size >= (m_config.txQueueSize * threshold);
+}
+
+void SerialPort::flushTxQueue()
+{
+    std::lock_guard<std::recursive_mutex> lock(m_txMutex);
+    // Clear the TX queue without sending the bytes
+    while (!m_txQueue.empty()) {
+        m_txQueue.pop();
+    }
+    dbglog("SerialPort::flushTxQueue() - Cleared TX queue for %s\n", m_config.portName.c_str());
 }
 
 #else
@@ -618,6 +669,28 @@ bool SerialPort::isOpen() const
     return m_fd != -1;
 }
 
+size_t SerialPort::getTxQueueSize() const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_txMutex);
+    return m_txQueue.size();
+}
+
+bool SerialPort::isTxQueueNearFull(float threshold) const
+{
+    size_t current_size = getTxQueueSize();
+    return current_size >= (m_config.txQueueSize * threshold);
+}
+
+void SerialPort::flushTxQueue()
+{
+    std::lock_guard<std::recursive_mutex> lock(m_txMutex);
+    // Clear the TX queue without sending the bytes
+    while (!m_txQueue.empty()) {
+        m_txQueue.pop();
+    }
+    dbglog("SerialPort::flushTxQueue() - Cleared TX queue for %s\n", m_config.portName.c_str());
+}
+
 void SerialPort::attachTerminal(std::shared_ptr<Terminal> terminal)
 {
     m_terminal = std::move(terminal);
@@ -642,9 +715,8 @@ void SerialPort::sendByte(uint8 byte)
 
     std::lock_guard<std::recursive_mutex> lock(m_txMutex);
 
-    // simple backpressure cap
-    constexpr size_t MAX_TX_QUEUE = 512;
-    if (m_txQueue.size() >= MAX_TX_QUEUE) {
+    // Use configurable TX queue size
+    if (m_txQueue.size() >= m_config.txQueueSize) {
         dbglog("SerialPort::sendByte() - TX queue full (%u), drop 0x%02X\n",
                (unsigned)m_txQueue.size(), byte);
         return;
@@ -664,6 +736,36 @@ void SerialPort::sendData(const uint8 *data, size_t length)
 {
     for (size_t i = 0; i < length; ++i) {
         sendByte(data[i]);
+    }
+}
+
+void SerialPort::sendXON()
+{
+    if (m_xoffSent.load()) {
+        sendByte(0x11); // DC1 (XON)
+        m_xoffSent.store(false);
+        m_xonSentCount.fetch_add(1);
+        
+        // Capture for debugging if enabled
+        if (m_captureCallback) {
+            // Log this as a special flow control event
+            dbglog("SerialPort::sendXON() - Sending XON to %s\n", m_config.portName.c_str());
+        }
+    }
+}
+
+void SerialPort::sendXOFF()
+{
+    if (!m_xoffSent.load()) {
+        sendByte(0x13); // DC3 (XOFF)
+        m_xoffSent.store(true);
+        m_xoffSentCount.fetch_add(1);
+        
+        // Capture for debugging if enabled
+        if (m_captureCallback) {
+            // Log this as a special flow control event
+            dbglog("SerialPort::sendXOFF() - Sending XOFF to %s\n", m_config.portName.c_str());
+        }
     }
 }
 

@@ -18,6 +18,12 @@ struct TerminalPortConfig {
     bool swFlowControl;            // Software flow control (XON/XOFF)
     bool enabled;                  // Whether this terminal is enabled
     
+    // Flow control configuration
+    size_t rxFifoSize;             // RX FIFO size (default: 2048)
+    size_t txQueueSize;            // TX queue size (default: 8192)
+    size_t xoffThresholdPercent;   // XOFF threshold as percentage (default: 75)
+    size_t xonThresholdPercent;    // XON threshold as percentage (default: 25)
+    
     TerminalPortConfig() :
         portName("/dev/ttyUSB0"),
         baudRate(19200),
@@ -26,7 +32,11 @@ struct TerminalPortConfig {
         stopBits(ONESTOPBIT),
         hwFlowControl(false),      // Wang terminals don't use hardware flow control
         swFlowControl(true),       // Enable XON/XOFF for Wang terminals
-        enabled(false)
+        enabled(false),
+        rxFifoSize(2048),          // 2KB FIFO for better flow control
+        txQueueSize(8192),         // 8KB TX queue for high-output scenarios
+        xoffThresholdPercent(75),  // Send XOFF at 75% full
+        xonThresholdPercent(25)    // Send XON at 25% full
     {}
     
     

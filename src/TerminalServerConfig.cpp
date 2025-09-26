@@ -23,6 +23,7 @@ SerialConfig TerminalPortConfig::toSerialConfig() const
     config.stopBits = stopBits;
     config.hwFlowControl = hwFlowControl;
     config.swFlowControl = swFlowControl;
+    config.txQueueSize = txQueueSize;
     return config;
 }
 

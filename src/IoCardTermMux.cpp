@@ -112,6 +112,11 @@ IoCardTermMux::IoCardTermMux(std::shared_ptr<Scheduler> scheduler,
         t.rx_ready = false;
         t.rx_byte  = 0x00;
 
+        // Initialize flow control state
+        t.xoff_sent = false;
+        t.xoff_sent_count = 0;
+        t.xon_sent_count = 0;
+
         t.tx_ready = true;
         t.tx_byte  = 0x00;
         t.tx_tmr   = nullptr;
@@ -200,6 +205,8 @@ IoCardTermMux::~IoCardTermMux()
         for (auto &t : m_terms) {
             // Clean up serial port connection if it exists
             if (t.serial_port) {
+                // Flush any pending TX data to prevent spurious output after exit
+                t.serial_port->flushTxQueue();
                 t.serial_port->detachTerminal();
                 t.serial_port->close();
                 t.serial_port.reset();
@@ -208,6 +215,8 @@ IoCardTermMux::~IoCardTermMux()
             t.terminal = nullptr;
 #endif
             t.session.reset();
+            // Clear any pending RX data
+            t.rx_fifo.clear();
         }
     }
 }
@@ -437,10 +446,12 @@ IoCardTermMux::updateRbi() noexcept
 void
 IoCardTermMux::updateInterrupt() noexcept
 {
-    m_interrupt_pending = !m_terms[0].rx_fifo.empty()
-                       || !m_terms[1].rx_fifo.empty()
-                       || !m_terms[2].rx_fifo.empty()
-                       || !m_terms[3].rx_fifo.empty();
+    // More efficient interrupt check - exit early on first non-empty FIFO
+    bool has_rx_data = false;
+    for (int i = 0; i < m_num_terms && !has_rx_data; ++i) {
+        has_rx_data = !m_terms[i].rx_fifo.empty();
+    }
+    m_interrupt_pending = has_rx_data;
 }
 
 
@@ -478,9 +489,9 @@ IoCardTermMux::checkTxBuffer(int term_num)
                       std::bind(&IoCardTermMux::mxdToTermCallback, this, term_num, term.tx_byte)
                   );
 
-    // the byte in the tx register is moved to the serializer,
-    // making room for the next tx byte
-    term.tx_ready = true;
+    // CRITICAL FIX: Do NOT set tx_ready = true here!
+    // tx_ready should only be set after actual transmission completes in mxdToTermCallback()
+    // This creates proper backpressure at the Wang CPU level
 }
 
 
@@ -493,6 +504,26 @@ IoCardTermMux::mxdToTermCallback(int term_num, int byte)
     assert((0 <= term_num) && (term_num < MAX_TERMINALS));
     m_term_t &term = m_terms[term_num];
     term.tx_tmr = nullptr;
+
+    // Check TX queue backpressure before sending - use lighter approach to avoid RX interference
+    if (term.serial_port && term.serial_port->isOpen()) {
+        size_t queue_size = term.serial_port->getTxQueueSize();
+        size_t queue_capacity = term.serial_port->getTxQueueCapacity();
+        float queue_fullness = static_cast<float>(queue_size) / queue_capacity;
+        
+        // Apply much gentler backpressure to avoid affecting RX responsiveness
+        if (queue_fullness > 0.90f) { // Increase threshold to 90% to reduce interference
+            // Use much shorter delays: 90%=50μs, 95%=100μs, 100%=200μs
+            int64 delay_us = 50 + static_cast<int64>((queue_fullness - 0.90f) * 1500); // 50μs to 200μs max
+            term.tx_tmr = m_scheduler->createTimer(
+                TIMER_US(delay_us),
+                std::bind(&IoCardTermMux::mxdToTermCallback, this, term_num, byte)
+            );
+            dbglog("IoCardTermMux: TX queue %d%% full (%zu/%zu), delaying %lldμs for terminal %d\n", 
+                   static_cast<int>(queue_fullness * 100), queue_size, queue_capacity, delay_us, term_num);
+            return;  // Don't proceed with checkTxBuffer yet
+        }
+    }
 
     // Route output to appropriate backend: session, serial port, or GUI terminal
     if (term.session) {
@@ -508,6 +539,10 @@ IoCardTermMux::mxdToTermCallback(int term_num, int byte)
         term.terminal->processChar(static_cast<uint8>(byte));
     }
 #endif
+    
+    // CRITICAL FIX: Set tx_ready = true ONLY after successful transmission
+    // This creates proper UART timing simulation and prevents CPU flooding
+    term.tx_ready = true;
     
     checkTxBuffer(term_num);
 }
@@ -529,6 +564,13 @@ IoCardTermMux::queueRxByte(int term_num, uint8_t byte)
     assert((0 <= term_num) && (term_num < MAX_TERMINALS));
     auto &t = m_terms[term_num];
     
+    // Filter out flow control characters that shouldn't reach the emulator
+    // XON (0x11/DC1) and XOFF (0x13/DC3) are handled by the serial port layer
+    if (byte == 0x11 || byte == 0x13) {
+        dbglog("IoCardTermMux: Filtering flow control byte 0x%02X from terminal %d\n", byte, term_num);
+        return; // Don't queue flow control characters
+    }
+    
     if (t.rx_fifo.size() >= RX_FIFO_MAX) {
         // Drop oldest to avoid hard-stall; count a stat
         t.rx_fifo.pop_front();
@@ -536,7 +578,52 @@ IoCardTermMux::queueRxByte(int term_num, uint8_t byte)
     }
     t.rx_fifo.push_back(byte);
 
+    // Send XOFF immediately if buffer becomes full to prevent further overrun
+    if (t.rx_fifo.size() >= RX_FIFO_XOFF_THRESHOLD && !t.xoff_sent) {
+        sendXOFF(term_num);
+    }
+
     // This should assert the card's RxRDY/interrupt state like the prior rx_ready did
+    updateInterrupt();
+}
+
+// Batch processing for high-throughput scenarios
+void
+IoCardTermMux::queueRxBytes(int term_num, const uint8_t* data, size_t length)
+{
+    assert((0 <= term_num) && (term_num < MAX_TERMINALS));
+    if (length == 0) return;
+    
+    auto &t = m_terms[term_num];
+    
+    // Calculate how many bytes we can add without overflow
+    size_t available_space = (t.rx_fifo.size() < RX_FIFO_MAX) ? 
+                            (RX_FIFO_MAX - t.rx_fifo.size()) : 0;
+    
+    if (available_space == 0) {
+        // FIFO is full, drop oldest bytes to make room
+        size_t bytes_to_drop = std::min(length, RX_FIFO_MAX / 2);  // Drop up to half the FIFO
+        for (size_t i = 0; i < bytes_to_drop; ++i) {
+            if (!t.rx_fifo.empty()) {
+                t.rx_fifo.pop_front();
+                ++t.rx_overrun_drops;
+            }
+        }
+        available_space = RX_FIFO_MAX - t.rx_fifo.size();
+    }
+    
+    // Add as many bytes as we can fit
+    size_t bytes_to_add = std::min(length, available_space);
+    for (size_t i = 0; i < bytes_to_add; ++i) {
+        t.rx_fifo.push_back(data[i]);
+    }
+    
+    // Count any dropped bytes
+    if (bytes_to_add < length) {
+        t.rx_overrun_drops += (length - bytes_to_add);
+    }
+
+    // Update interrupt state once at the end for efficiency
     updateInterrupt();
 }
 
@@ -548,7 +635,99 @@ IoCardTermMux::serialRxByte(int term_num, uint8_t byte)
     // Normalize CR/LF if your system requires (usually leave as-is; CR=0x0D).
     // if (byte == 0x0A) return; // example: drop bare LF if you previously did that
 
+    // RX processing has highest priority - never let TX operations interfere
     queueRxByte(term_num, byte);
+    
+    // Only check RX-related flow control (XON when buffer drains) - deferred to avoid latency
+    // XOFF will be sent when buffer gets full during queueRxByte processing
+    if (m_terms[term_num].rx_fifo.size() <= RX_FIFO_XON_THRESHOLD && m_terms[term_num].xoff_sent) {
+        checkAndSendFlowControl(term_num);
+    }
+}
+
+// Check RX FIFO level and send appropriate flow control
+void
+IoCardTermMux::checkAndSendFlowControl(int term_num)
+{
+    assert((0 <= term_num) && (term_num < MAX_TERMINALS));
+    auto &t = m_terms[term_num];
+    
+    size_t fifo_size = t.rx_fifo.size();
+    
+    // Send XOFF if FIFO is getting full and we haven't sent XOFF yet
+    if (fifo_size >= RX_FIFO_XOFF_THRESHOLD && !t.xoff_sent) {
+        sendXOFF(term_num);
+    }
+    // Send XON if FIFO has drained enough and we previously sent XOFF
+    else if (fifo_size <= RX_FIFO_XON_THRESHOLD && t.xoff_sent) {
+        sendXON(term_num);
+    }
+}
+
+// Send XON to terminal via serial port
+void
+IoCardTermMux::sendXON(int term_num)
+{
+    assert((0 <= term_num) && (term_num < MAX_TERMINALS));
+    auto &t = m_terms[term_num];
+    
+    // Send XON via serial port if available
+    if (t.serial_port && t.serial_port->isOpen()) {
+        t.serial_port->sendXON();
+        t.xoff_sent = false;
+        t.xon_sent_count++;
+        dbglog("IoCardTermMux: Sent XON to terminal %d (FIFO size: %zu)\n", 
+               term_num, t.rx_fifo.size());
+    }
+    // Send XON via session if available  
+    else if (t.session && t.session->isActive()) {
+        t.session->mxdToTerm(0x11); // DC1 (XON)
+        t.xoff_sent = false;
+        t.xon_sent_count++;
+        dbglog("IoCardTermMux: Sent XON to terminal %d via session (FIFO size: %zu)\n", 
+               term_num, t.rx_fifo.size());
+    }
+}
+
+// Send XOFF to terminal via serial port
+void
+IoCardTermMux::sendXOFF(int term_num)
+{
+    assert((0 <= term_num) && (term_num < MAX_TERMINALS));
+    auto &t = m_terms[term_num];
+    
+    // Send XOFF via serial port if available
+    if (t.serial_port && t.serial_port->isOpen()) {
+        t.serial_port->sendXOFF();
+        t.xoff_sent = true;
+        t.xoff_sent_count++;
+        dbglog("IoCardTermMux: Sent XOFF to terminal %d (FIFO size: %zu)\n", 
+               term_num, t.rx_fifo.size());
+    }
+    // Send XOFF via session if available
+    else if (t.session && t.session->isActive()) {
+        t.session->mxdToTerm(0x13); // DC3 (XOFF)
+        t.xoff_sent = true;
+        t.xoff_sent_count++;
+        dbglog("IoCardTermMux: Sent XOFF to terminal %d via session (FIFO size: %zu)\n", 
+               term_num, t.rx_fifo.size());
+    }
+}
+
+// Get flow control statistics for debugging/monitoring
+void
+IoCardTermMux::getFlowControlStats(int term_num, uint32_t* rx_overrun_drops, 
+                                  uint64_t* xon_sent_count, uint64_t* xoff_sent_count, 
+                                  size_t* fifo_size, bool* xoff_sent) const
+{
+    assert((0 <= term_num) && (term_num < MAX_TERMINALS));
+    const auto &t = m_terms[term_num];
+    
+    if (rx_overrun_drops) *rx_overrun_drops = t.rx_overrun_drops;
+    if (xon_sent_count) *xon_sent_count = t.xon_sent_count;
+    if (xoff_sent_count) *xoff_sent_count = t.xoff_sent_count;
+    if (fifo_size) *fifo_size = t.rx_fifo.size();
+    if (xoff_sent) *xoff_sent = t.xoff_sent;
 }
 
 // ============================================================================
@@ -681,6 +860,8 @@ IoCardTermMux::i8080_in_func(int addr, void *user_data) noexcept
         if (!term.rx_fifo.empty()) {
             rv = term.rx_fifo.front();
             term.rx_fifo.pop_front();
+            // Check if we should send XON now that we've freed up space
+            tthis->checkAndSendFlowControl(term_num);
         } else {
             rv = 0x00;  // Return 0 if FIFO is empty
         }

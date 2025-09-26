@@ -53,6 +53,11 @@ public:
     
     // Get shared scheduler for terminal server components
     std::shared_ptr<Scheduler> getScheduler() const { return m_scheduler; }
+    
+    // Get flow control statistics for debugging
+    void getFlowControlStats(int term_num, uint32_t* rx_overrun_drops, 
+                            uint64_t* xon_sent_count, uint64_t* xoff_sent_count, 
+                            size_t* fifo_size, bool* xoff_sent) const;
 
 private:
 
@@ -88,9 +93,19 @@ private:
     
     // RX FIFO management
     void queueRxByte(int term_num, uint8_t byte);
+    void queueRxBytes(int term_num, const uint8_t* data, size_t length);  // Batch processing
     
-    // FIFO capacity
-    static constexpr size_t RX_FIFO_MAX = 64;
+    // Flow control management
+    void checkAndSendFlowControl(int term_num);
+    void sendXON(int term_num);
+    void sendXOFF(int term_num);
+    
+    // FIFO capacity - increased from 64 to 2048 for better flow control
+    static constexpr size_t RX_FIFO_MAX = 2048;
+    
+    // Flow control watermarks for XON/XOFF
+    static constexpr size_t RX_FIFO_XOFF_THRESHOLD = (RX_FIFO_MAX * 3) / 4;  // 75% - send XOFF
+    static constexpr size_t RX_FIFO_XON_THRESHOLD = (RX_FIFO_MAX * 1) / 4;   // 25% - send XON
 
     // ---- board state ----
     TermMuxCfgState            m_cfg;       // current configuration
@@ -128,6 +143,10 @@ private:
         // RX FIFO (new implementation)
         std::deque<uint8_t>    rx_fifo;     // RX FIFO for reliable multi-byte sequences
         uint32_t               rx_overrun_drops = 0; // statistics for debugging
+        // Flow control state
+        bool                   xoff_sent = false;    // true if XOFF has been sent and not cleared by XON
+        uint64_t               xoff_sent_count = 0;  // number of times XOFF was sent
+        uint64_t               xon_sent_count = 0;   // number of times XON was sent
         // uart transmit state
         bool                   tx_ready;    // room to accept a byte (1 deep FIFO)
         int                    tx_byte;     // value of tx byte
