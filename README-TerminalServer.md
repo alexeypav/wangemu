@@ -14,34 +14,29 @@ Modified version of wangemu, to run on Linux and connect multiple physical Wang 
 ### Build the Terminal Server
 
 ```bash
-# Clone and build
+# Clone and build x86_64 version
 git clone <repository-url>
 cd wangemu
 make -f makefile.terminal-server
 
-# The binary will be created as 'wangemu-terminal-server'
+# Or build ARM64 version for Raspberry Pi
+make -f makefile.terminal-server-aarch64
+
+# The binary will be created as 'wangemu-terminal-server' or 'wangemu-terminal-server-aarch64'
 ```
 
-### Single Terminal Setup
+### Configuration-Based Setup
+
+The terminal server uses **configuration-only** approach - no more command line terminal configuration:
 
 ```bash
-# Connect one Wang terminal
-./wangemu-terminal-server --term0=/dev/ttyUSB0,19200,8,O,1,xonxoff
-```
+# Enable web configuration interface
+./wangemu-terminal-server --web-config
 
-### Multiple Terminals
+# Use custom INI file
+./wangemu-terminal-server --ini=/path/to/custom.ini
 
-```bash
-# Connect multiple terminals
-./wangemu-terminal-server --num-terms=2 \
-  --term0=/dev/ttyUSB0,19200,8,O,1,xonxoff \
-  --term1=/dev/ttyUSB1,19200,8,O,1,xonxoff
-```
-
-### Default Configuration
-
-```bash
-# Run with default settings (terminal 0 on /dev/ttyUSB0)
+# Run with defaults (uses wangemu.ini in current directory)
 ./wangemu-terminal-server
 ```
 
@@ -99,82 +94,91 @@ make -f makefile.terminal-server-aarch64 opt
 
 ### Command Line Options
 
+The terminal server uses a **simplified command line interface** - all system and terminal settings are configured via INI files or web interface:
+
 ```
 Usage: wangemu-terminal-server [options]
 
 Options:
-  --termN=PORT,BAUD,DATA,PARITY,STOP[,FLOW]
-                             Configure terminal N (0-3)
-                             PORT: /dev/ttyUSB0, /dev/ttyACM0, etc.
-                             BAUD: 300, 1200, 2400, 4800, 9600, 19200, etc.
-                             DATA: 7 or 8
-                             PARITY: N (none), O (odd), E (even)
-                             STOP: 1 or 2
-                             FLOW: none, xonxoff, rtscts (optional)
-  --mxd-addr=ADDR            MXD I/O address (default: 0x00)
-  --num-terms=N              Number of terminals (1-4, default: 1)
-  --capture-dir=DIR          Directory for capture files
-  --ini=PATH                 Load configuration from INI file
-  --status                   Print status JSON and exit
+  --ini=PATH                 Load configuration from INI file (default: wangemu.ini)
+  --web-config               Enable web configuration interface
+  --web-port=PORT            Web server port (default: 8080, enables web interface)
   --help, -h                 Show this help message
 ```
 
-### Terminal Configuration Format
+### Configuration Sources
 
-```
---termN=PORT,BAUD,DATA,PARITY,STOP[,FLOW]
-```
+All system and terminal settings are configured via:
+1. **INI file** (wangemu.ini by default) 
+2. **Web interface** (--web-config)
 
 **Examples:**
-- `--term0=/dev/ttyUSB0,19200,8,O,1,xonxoff` - Standard Wang terminal
-- `--term1=/dev/ttyACM0,9600,7,E,2,none` - Custom configuration
-- `--term2=/dev/ttyUSB2,19200,8,N,1` - No flow control
+- `./wangemu-terminal-server --web-config` - Start with web configuration interface
+- `./wangemu-terminal-server --ini=/path/to/custom.ini` - Use custom INI file
+- `./wangemu-terminal-server --web-port=9090` - Web interface on port 9090
 
 ### INI File Configuration
 
-The terminal server uses the same `wangemu.ini` format as the GUI version:
+The terminal server uses a **modern simplified INI format** with separate sections for cleaner organization:
 
 ```ini
-[wangemu/config-0/cpu]
-cpu=2200MVP-C
-memsize=512
+[terminal_server]
+mxd_io_addr=0x00
+num_terms=2
+capture_dir=/var/log/wangemu
 
-[wangemu/config-0/io/slot-0]
-addr=0x000
-type=2236 MXD
+[terminal_server/term0]
+port=/dev/ttyUSB0
+baud=19200
+data=8
+parity=odd
+stop=1
+flow=xonxoff
 
-[wangemu/config-0/io/slot-0/cardcfg]
-numTerminals=2
-terminal0_com_port=/dev/ttyUSB0
-terminal0_baud_rate=19200
-terminal0_sw_flow_control=1
-terminal1_com_port=/dev/ttyUSB1
-terminal1_baud_rate=19200
-terminal1_sw_flow_control=1
+[terminal_server/term1]  
+port=/dev/ttyUSB1
+baud=19200
+data=8
+parity=odd
+stop=1
+flow=xonxoff
 ```
+
+**Available Settings:**
+- `port`: Serial device path (`/dev/ttyUSB0`, `/dev/ttyACM0`, etc.)
+- `baud`: Baud rate (300, 1200, 2400, 4800, 9600, 19200, 38400, etc.)
+- `data`: Data bits (7 or 8)
+- `parity`: Parity (none, odd, even)  
+- `stop`: Stop bits (1 or 2)
+- `flow`: Flow control (none, xonxoff, rtscts)
 
 ## Usage Examples
 
-## Multiple Terminals
+### Web Configuration
 
 ```bash
-# Run as service with multiple terminals
-./wangemu-terminal-server --num-terms=4 \
-  --term0=/dev/ttyUSB0,19200,8,O,1,xonxoff \
-  --term1=/dev/ttyUSB1,19200,8,O,1,xonxoff \
-  --term2=/dev/ttyUSB2,19200,8,O,1,xonxoff \
-  --term3=/dev/ttyUSB3,19200,8,O,1,xonxoff \
-  --capture-dir=/var/log/wangemu
+# Start with web interface (recommended)
+./wangemu-terminal-server --web-config
+
+# Access web interface at http://localhost:8080
+# Configure terminals through the web UI
+```
+
+### INI File Configuration
+
+```bash
+# Create custom configuration
+./wangemu-terminal-server --ini=/etc/wangemu-server.ini
+
+# Run with default configuration
+./wangemu-terminal-server
 ```
 
 ### Development & Testing
 
 ```bash
-# Test with null device (no hardware needed)
-./wangemu-terminal-server --term0=/dev/null,19200,8,O,1,none
-
-# Check configuration
-./wangemu-terminal-server --status
+# Start with web interface for testing
+./wangemu-terminal-server --web-config --web-port=9090
 
 # Monitor runtime statistics
 kill -SIGUSR1 $(pidof wangemu-terminal-server)
