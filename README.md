@@ -4,6 +4,8 @@ This is a modified version of the original wangemu, forked from [jtbattle/wangem
 
 For the GUI/Original version; added a Terminal mode (select the 2336DW in the CPU menu) to use the host's serial ports to connect to a real Wang2200 system
 
+> **Disclaimer**: I used AI assistance quite extensively, otherwise this wouldn't be possible or would take me "years" to do this.
+
 
 ## Run this on a Raspberry PI and connect a real Wang 2x36 terminal
 * Build the ARM version on linux (see below for build instructions)
@@ -15,7 +17,21 @@ For the GUI/Original version; added a Terminal mode (select the 2336DW in the CP
 * Settings should apply, any extra terminals should come up
 * For information on configuration, check the original documentation [emu.html](http://www.wang2200.org/emu.html)
 * wangemu.ini manual configuration should work the same, you will need to stop the emulator first otherwise it'll overwrite the .ini file on exit
-* For automatic startup on boot, copy over the setup-startup.sh and start-wangemu.sh script, run sudo ./setup-startup.sh 
+* For automatic startup on boot, copy over the setup-startup.sh and start-wangemu.sh script, run sudo ./setup-startup.sh
+
+
+###  Null modem wiring I've used for connecting a Terminal to the USB Serial Adaptor
+
+| DB9 (PC/Emu) | DB25 (Wang 2X36DW) | Signal     | Notes                                     |
+|--------------|--------------------|------------|-------------------------------------------|
+| 1            | 20                 | DTR → DCD  | Tie Terminal Ready to Host Carrier Detect |
+| 2            | 2                  | TXD → RXD  | Terminal TX → Host RX                     |
+| 3            | 3                  | RXD ← TXD  | Terminal RX ← Host TX                     |
+| 4            | 6, 8               | DSR/DCD ← DTR | Host Ready & Carrier Detect → Terminal  |
+| 5            | 7                  | GND        | Common ground                             |
+| 6            | 20                 | DTR → DSR  | Terminal Ready → Host                     |
+| 7            | 5                  | CTS ↔ RTS  | Crossed handshaking                       |
+| 8            | 4                  | RTS ↔ CTS  | Crossed handshaking                       |
 
 ## Terminal Server Version
 
@@ -28,59 +44,6 @@ For the GUI/Original version; added a Terminal mode (select the 2336DW in the CP
 - **Serial communication** over the host's COM ports
 - **Terminal emulation** - use the emulator as a Wang terminal connected to a real Wang 2200 system  
 - **Physical terminal support** - connect a Wang terminal via the host's COM port to the emulator
-
-> **Disclaimer**: I used AI assistance quite extensively, otherwise this wouldn't be possible or would take me "years" to do this.
-
-
-
-Wang 2200 Emulator
-==================
-
-wangemu is able to emulate a Wang 2200, 2200VP, or 2200MVP computer.
-
-The emulator is written in C++ and makes use of the
-[wxWidgets](http://www.wxwidgets.org)
-library, which allows it to compile and run both under Windows and MacOS.  In
-theory it could run under Linux too, but I haven't tried it and likely there
-will be some code tweaks to get it to compile.
-
-Wangemu allows building a system configuration, including
-
-* CPU type (2200B, 2200T, 2200VP, 2200MVP, MicroVP)
-* amount of system RAM
-* what type of peripheral is loaded into each of the backplane slots
-
-The 2200 had an incredible array of peripherals it supported, but only a
-few are emulated:
-
-* CRT controller (64x16 or 80x24)
-* MXD terminal mux and 2236 intelligent terminal
-* printer controller (virtual, or redirect to real printer)
-* keyboard controller
-* disk controller
-
-The emulator allows entering programs manually via the keyboard,
-or sourcing them from a text file, or loading it off of a virtual
-disk image.
-
-The wvdutil/ subdirectory contains a python program for inspecting
-and manipulating virtual disk images.  See the readme file under
-that directory for more details.
-
-History
-----------
-Wangemu has been developed on and off since 2002, advancing from
-a barely functioning revision 0.5 to the current revision 3.0.
-Jim Battle is the primary author of the emulator, but Paul Heller
-was responsible for initially getting the emulator to work under
-MacOS and adding printer support.
-
-wangemu is just one tiny part of an extensive website concerning
-the Wang 2200 computer, located at
-[http://www.wang2200.org](http://www.wang2200.org).
-Traditionally, on each release, a zip file containing the source
-code, some notes, and a precompiled binary has been published to
-the website's [emu.html](http://www.wang2200.org/emu.html) page.
 
 Building on Windows
 ----------
@@ -185,6 +148,57 @@ make -f makefile.terminal-server-aarch64
 # Run terminal server
 ./wangemu-terminal-server --web-config
 ```
+
+
+
+Wang 2200 Emulator
+==================
+
+wangemu is able to emulate a Wang 2200, 2200VP, or 2200MVP computer.
+
+The emulator is written in C++ and makes use of the
+[wxWidgets](http://www.wxwidgets.org)
+library, which allows it to compile and run both under Windows and MacOS.  In
+theory it could run under Linux too, but I haven't tried it and likely there
+will be some code tweaks to get it to compile.
+
+Wangemu allows building a system configuration, including
+
+* CPU type (2200B, 2200T, 2200VP, 2200MVP, MicroVP)
+* amount of system RAM
+* what type of peripheral is loaded into each of the backplane slots
+
+The 2200 had an incredible array of peripherals it supported, but only a
+few are emulated:
+
+* CRT controller (64x16 or 80x24)
+* MXD terminal mux and 2236 intelligent terminal
+* printer controller (virtual, or redirect to real printer)
+* keyboard controller
+* disk controller
+
+The emulator allows entering programs manually via the keyboard,
+or sourcing them from a text file, or loading it off of a virtual
+disk image.
+
+The wvdutil/ subdirectory contains a python program for inspecting
+and manipulating virtual disk images.  See the readme file under
+that directory for more details.
+
+History
+----------
+Wangemu has been developed on and off since 2002, advancing from
+a barely functioning revision 0.5 to the current revision 3.0.
+Jim Battle is the primary author of the emulator, but Paul Heller
+was responsible for initially getting the emulator to work under
+MacOS and adding printer support.
+
+wangemu is just one tiny part of an extensive website concerning
+the Wang 2200 computer, located at
+[http://www.wang2200.org](http://www.wang2200.org).
+Traditionally, on each release, a zip file containing the source
+code, some notes, and a precompiled binary has been published to
+the website's [emu.html](http://www.wang2200.org/emu.html) page.
 
 License
 ----------
