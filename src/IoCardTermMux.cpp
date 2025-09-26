@@ -10,6 +10,12 @@
 // - Hand disassembly of MXD ROM image:
 //     https://wang2200.org/2200tech/wang_2236mxd.lst
 
+#include <algorithm>  // for std::min
+
+#ifdef _WIN32
+#define NOMINMAX  // Prevent Windows from defining min/max macros
+#endif
+
 #include "Cpu2200.h"
 #include "IoCardKeyboard.h"   // for key encodings
 #include "IoCardTermMux.h"
