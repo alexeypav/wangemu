@@ -387,8 +387,10 @@ int main(int argc, char* argv[]) {
                 lastRetryTime = now;
             }
             
-            // Small sleep to prevent 100% CPU usage
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            // Sleep to prevent high CPU usage - 20ms provides good balance
+            // This gives us ~50Hz main loop which is still very responsive for
+            // terminal communication while significantly reducing CPU usage
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
         
         std::cerr << "[INFO] Main loop exited, cleaning up sessions...\n";

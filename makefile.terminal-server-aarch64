@@ -84,8 +84,8 @@ OBJFILES := $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.o,$(ALL_CPP_SOURCES)) \
 debug: OPTFLAGS := -g -O0
 debug: ./wangemu-terminal-server-aarch64
 
-# optimized build
-opt: OPTFLAGS := -O2
+# optimized build with Cortex-A53 specific optimizations for Raspberry Pi Zero 2
+opt: OPTFLAGS := -O2 -pipe -mcpu=cortex-a53 -mtune=cortex-a53
 opt: ./wangemu-terminal-server-aarch64
 
 # Compiler settings for headless build (no wxWidgets) - aarch64 cross-compile

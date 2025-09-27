@@ -777,7 +777,13 @@ case RUNNING: {
                 }
             }
 
-            host::sleep(0);
+            // Adaptive sleep: longer when idle, shorter when active
+            // This reduces CPU usage further when no timers are pending
+            if (scheduler && !scheduler->hasPendingTimers()) {
+                host::sleep(2);  // Sleep longer when idle
+            } else {
+                host::sleep(1);  // Normal sleep when timers are active
+            }
         }
 #endif // HEADLESS_BUILD
         if (cpu) {
@@ -1046,8 +1052,10 @@ system2200::emulateTimeslice(int ts_ms)
             }
         }
 
-        // at least yield so we don't hog the whole machine
-        host::sleep(0);
+        // Sleep briefly to prevent excessive CPU usage
+        // sleep(0) only yields but doesn't actually sleep, causing high CPU
+        // sleep(1) gives actual sleep while maintaining responsiveness
+        host::sleep(1);
     }
 }
 

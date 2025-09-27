@@ -305,7 +305,7 @@ void SerialPort::receiveThreadProc()
 
         DWORD err = GetLastError();
         if (err == ERROR_IO_PENDING) {
-            DWORD wait = WaitForSingleObject(m_readEvent, 100); // poll ~10Hz
+            DWORD wait = WaitForSingleObject(m_readEvent, 100); // poll ~10Hz - good balance for terminal communication
             if (wait == WAIT_OBJECT_0) {
                 if (GetOverlappedResult(m_handle, &m_readOverlapped, &bytesRead, FALSE)) {
                     for (DWORD i=0; i<bytesRead; ++i) processReceivedByte(buffer[i]);
@@ -804,7 +804,7 @@ void SerialPort::receiveThreadProc()
 
         struct timeval timeout;
         timeout.tv_sec = 0;
-        timeout.tv_usec = 100000; // 100ms timeout
+        timeout.tv_usec = 100000; // 100ms timeout - optimal for terminal communication with low CPU
 
         int result = select(maxfd + 1, &readfds, nullptr, nullptr, &timeout);
         
