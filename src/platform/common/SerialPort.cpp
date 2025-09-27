@@ -477,6 +477,7 @@ void SerialPort::flushTxQueue()
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/select.h>
+#include <poll.h>
 #include <errno.h>
 #include <cstring>
 #include <cassert>
@@ -533,8 +534,8 @@ bool SerialPort::open(const SerialConfig &config)
 
     m_config = config;
 
-    // Open the serial port with non-blocking I/O
-    m_fd = ::open(config.portName.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
+    // Open the serial port in blocking mode for more efficient I/O
+    m_fd = ::open(config.portName.c_str(), O_RDWR | O_NOCTTY);
     if (m_fd == -1) {
         dbglog("SerialPort::open() - Failed to open %s: %s\n",
                config.portName.c_str(), strerror(errno));
@@ -607,9 +608,9 @@ bool SerialPort::open(const SerialConfig &config)
     cfsetispeed(&tty, speed);
     cfsetospeed(&tty, speed);
 
-    // Set non-canonical mode with timeout
-    tty.c_cc[VMIN] = 0;   // Don't block waiting for input
-    tty.c_cc[VTIME] = 1;  // Wait up to 0.1 seconds
+    // Set blocking mode for byte-granular reads with minimal timeout
+    tty.c_cc[VMIN] = 1;   // Block until at least 1 byte available
+    tty.c_cc[VTIME] = 1;  // 0.1 second inter-byte timeout (keeps latency low)
 
     // Apply the configuration
     if (tcsetattr(m_fd, TCSANOW, &tty) != 0) {
@@ -792,25 +793,26 @@ void SerialPort::stopReceiving()
 void SerialPort::receiveThreadProc()
 {
     uint8 buffer[512];
-    fd_set readfds;
-    int maxfd = std::max(m_fd, m_cancelPipe[0]);
+    pollfd pfds[2];
+    int nfds = 1;
+
+    // Setup poll descriptors
+    pfds[0].fd = m_fd;
+    pfds[0].events = POLLIN;
+
+    if (m_cancelPipe[0] != -1) {
+        pfds[1].fd = m_cancelPipe[0];
+        pfds[1].events = POLLIN;
+        nfds = 2;
+    }
 
     while (!m_stopReceiving && isOpen()) {
-        FD_ZERO(&readfds);
-        FD_SET(m_fd, &readfds);
-        if (m_cancelPipe[0] != -1) {
-            FD_SET(m_cancelPipe[0], &readfds);
-        }
-
-        struct timeval timeout;
-        timeout.tv_sec = 0;
-        timeout.tv_usec = 100000; // 100ms timeout - optimal for terminal communication with low CPU
-
-        int result = select(maxfd + 1, &readfds, nullptr, nullptr, &timeout);
+        // Use poll() with 20ms timeout for good balance between responsiveness and CPU usage
+        int result = poll(pfds, nfds, 20);
         
         if (result > 0) {
             // Check for cancellation signal
-            if (m_cancelPipe[0] != -1 && FD_ISSET(m_cancelPipe[0], &readfds)) {
+            if (nfds > 1 && (pfds[1].revents & POLLIN)) {
                 char dummy;
                 ssize_t readResult = read(m_cancelPipe[0], &dummy, 1);
                 (void)readResult; // suppress unused variable warning
@@ -818,7 +820,7 @@ void SerialPort::receiveThreadProc()
             }
 
             // Check for data on serial port
-            if (FD_ISSET(m_fd, &readfds)) {
+            if (pfds[0].revents & POLLIN) {
                 ssize_t bytesRead = read(m_fd, buffer, sizeof(buffer));
                 if (bytesRead > 0) {
                     for (ssize_t i = 0; i < bytesRead; ++i) {
@@ -890,8 +892,8 @@ void SerialPort::receiveThreadProc()
                 
                 if (attemptReconnect()) {
                     dbglog("SerialPort::receiveThreadProc - Reconnection successful\n");
-                    // Update maxfd after reconnection
-                    maxfd = std::max(m_fd, m_cancelPipe[0]);
+                    // Update poll descriptors after reconnection
+                    pfds[0].fd = m_fd;
                     continue; // Continue with the loop
                 } else {
                     dbglog("SerialPort::receiveThreadProc - Reconnection failed\n");

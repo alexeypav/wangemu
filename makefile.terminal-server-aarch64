@@ -90,7 +90,7 @@ opt: ./wangemu-terminal-server-aarch64
 
 # Compiler settings for headless build (no wxWidgets) - aarch64 cross-compile
 CXX         := aarch64-linux-gnu-g++
-CXXFLAGS    := -std=c++14 -fno-common -pthread -DHEADLESS_BUILD
+CXXFLAGS    := -std=c++17 -fno-common -pthread -DHEADLESS_BUILD -DDISABLE_WEBCONFIG
 CXXWARNINGS := -Wall -Wextra -Wshadow -Wformat -Wundef -Wstrict-aliasing=1 \
                -Wno-deprecated-declarations \
                -Wno-ctor-dtor-privacy -Woverloaded-virtual

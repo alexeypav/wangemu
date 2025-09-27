@@ -138,6 +138,8 @@ bool TerminalServerConfig::parseCommandLine(int argc, char* argv[])
         } else if (arg.find("--web-port=") == 0) {
             webServerPort = std::stoi(arg.substr(11));
             webServerEnabled = true; // Enable web server when port is specified
+        } else if (arg == "--debug-wakeups") {
+            debugWakeups = true;
         }
     }
     
@@ -201,6 +203,7 @@ void TerminalServerConfig::showHelp() const
     std::cout << "  --ini=PATH                 Load configuration from INI file (default: wangemu.ini)" << std::endl;
     std::cout << "  --web-config               Enable web configuration interface" << std::endl;
     std::cout << "  --web-port=PORT            Web server port (default: 8080, enables web interface)" << std::endl;
+    std::cout << "  --debug-wakeups            Log main loop wake-up reasons (for CPU debugging)" << std::endl;
     std::cout << "  --help, -h                 Show this help message" << std::endl;
     std::cout << std::endl;
     std::cout << "Configuration:" << std::endl;

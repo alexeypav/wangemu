@@ -77,6 +77,9 @@ public:
     
     // INI file settings
     std::string iniPath;               // Path to INI file to load (empty = default)
+
+    // Debug settings
+    bool debugWakeups = false;         // Enable wakeup reason logging
     
     /**
      * Load configuration from host config system (INI-style)

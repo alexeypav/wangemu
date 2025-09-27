@@ -33,7 +33,9 @@ static volatile bool dumpStatus = false;
 static volatile bool internalRestartRequested = false;
 static std::vector<std::shared_ptr<SerialTermSession>> sessions;
 static IoCardTermMux* termMux = nullptr;
+#ifndef DISABLE_WEBCONFIG
 static std::unique_ptr<WebConfigServer> webServer;
+#endif
 
 // Function to request internal restart from web server (thread-safe)
 void requestInternalRestart() {
@@ -264,12 +266,13 @@ int main(int argc, char* argv[]) {
         
         std::cerr << "[INFO] All terminals configured. Starting emulation...\n";
         
+#ifndef DISABLE_WEBCONFIG
         // Start web configuration server if enabled
         if (config.webServerEnabled) {
             std::string iniPath = config.iniPath.empty() ? "wangemu.ini" : config.iniPath;
             webServer = std::make_unique<WebConfigServer>(config.webServerPort, iniPath);
-            
-            
+
+
             if (webServer->start()) {
                 std::cerr << "[INFO] Web configuration server started on port " << config.webServerPort << "\n";
                 std::cerr << "[INFO] Open http://localhost:" << config.webServerPort << " to configure\n";
@@ -277,13 +280,23 @@ int main(int argc, char* argv[]) {
                 std::cerr << "[WARN] Failed to start web configuration server\n";
             }
         }
+#else
+        std::cerr << "[INFO] Web configuration server disabled in this build\n";
+#endif
         
         std::cerr << "[INFO] Wang 2200 system ready for terminal connections\n";
         std::cerr << "[INFO] Press Ctrl+C to shutdown gracefully\n";
         
-        // Main emulation loop
-        auto lastStatsTime = std::chrono::steady_clock::now();
-        auto lastRetryTime = std::chrono::steady_clock::now();
+        // Main emulation loop with deadline-based sleeping
+        using clock = std::chrono::steady_clock;
+        auto lastStatsTime = clock::now();
+        auto lastRetryTime = clock::now();
+        auto nextSlice = clock::now();
+        const auto sliceDuration = std::chrono::milliseconds(30); // 30ms slices for good balance
+
+        // Get the scheduler for deadline calculations
+        auto scheduler = termMux->getScheduler();
+
         while (running) {
             // Check for status dump request
             if (dumpStatus) {
@@ -325,9 +338,57 @@ int main(int argc, char* argv[]) {
             if (!system2200::onIdle()) {
                 break;
             }
-            
+
+            // Calculate next deadline as minimum of:
+            // 1. Next fixed time slice (30ms)
+            // 2. Next timer expiration
+            // 3. Stats/retry intervals
+            auto now = clock::now();
+            nextSlice += sliceDuration;
+            auto deadline = nextSlice;
+
+            // Consider next timer expiration
+            if (auto timerMs = scheduler->getMillisecondsUntilNext()) {
+                auto timerDeadline = now + std::chrono::milliseconds(*timerMs);
+                deadline = std::min(deadline, timerDeadline);
+            }
+
+            // Consider stats and retry intervals (but don't let them dominate)
+            auto statsDeadline = lastStatsTime + std::chrono::seconds(30);
+            auto retryDeadline = lastRetryTime + std::chrono::seconds(30);
+
+            // Don't let long intervals dominate the deadline
+            auto maxDeadline = now + std::chrono::milliseconds(100); // Cap at 100ms
+            deadline = std::min({deadline, statsDeadline, retryDeadline, maxDeadline});
+
+            // Sleep until deadline (or wake early on signals)
+            if (deadline > now) {
+                auto sleepStart = now;
+                std::this_thread::sleep_until(deadline);
+                auto wakeTime = clock::now();
+
+                // Debug wakeup reasons if enabled
+                if (config.debugWakeups) {
+                    auto actualSleep = std::chrono::duration_cast<std::chrono::milliseconds>(wakeTime - sleepStart);
+                    auto expectedSleep = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - sleepStart);
+
+                    std::string reason = "unknown";
+                    if (actualSleep >= expectedSleep - std::chrono::milliseconds(1)) {
+                        if (deadline == nextSlice) reason = "time_slice";
+                        else if (scheduler->hasPendingTimers()) reason = "timer_expired";
+                        else reason = "periodic_maintenance";
+                    } else {
+                        reason = "early_wake"; // Signal or other interruption
+                    }
+
+                    std::cerr << "[DEBUG] Woke after " << actualSleep.count()
+                              << "ms (expected " << expectedSleep.count()
+                              << "ms), reason: " << reason << std::endl;
+                }
+            }
+
             // Print session stats every 30 seconds
-            auto now = std::chrono::steady_clock::now();
+            now = clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastStatsTime);
             if (elapsed.count() >= 30) {
                 std::cerr << "[INFO] Session stats:\n";
@@ -386,22 +447,19 @@ int main(int argc, char* argv[]) {
                 }
                 lastRetryTime = now;
             }
-            
-            // Sleep to prevent high CPU usage - 20ms provides good balance
-            // This gives us ~50Hz main loop which is still very responsive for
-            // terminal communication while significantly reducing CPU usage
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
         
         std::cerr << "[INFO] Main loop exited, cleaning up sessions...\n";
         
         // Stop web server
+#ifndef DISABLE_WEBCONFIG
         if (webServer) {
             std::cerr << "[INFO] Stopping web configuration server...\n";
             webServer->stop();
             webServer.reset();
         }
-        
+#endif
+
         // Clean up sessions
         for (int i = 0; i < config.numTerminals; i++) {
             if (sessions[i]) {

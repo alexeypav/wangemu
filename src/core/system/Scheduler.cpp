@@ -31,6 +31,7 @@
 #include "../../gui/system/Ui.h"         // needed for UI_error()
 
 #include <algorithm>    // for std::sort
+#include <cstdlib>      // for abs
 
 // ======================================================================
 // minimal scheduler test
@@ -122,6 +123,13 @@ Scheduler::createTimer(int64 ns, const sched_callback_t &fcn)
     assert(ns >= 1);
     assert(ns <= 12E9);      // 12 seconds
 
+    // Apply minimum 1ms resolution to prevent excessive wake-ups
+    // This is especially important for low-power ARM systems
+    const int64 MIN_TIMER_NS = 1000000; // 1ms
+    if (ns < MIN_TIMER_NS) {
+        ns = MIN_TIMER_NS;
+    }
+
     // make sure we don't leak timers
     // the one tricky case that pushed the limit above 30 (max 37 seen)
     // is the SNAKE220 game on the "more_games.wvd" disk. for whatever
@@ -142,8 +150,19 @@ Scheduler::createTimer(int64 ns, const sched_callback_t &fcn)
 #endif
 
     int64 event_ns = m_time_ns + ns;
-    auto tmr = std::make_shared<Timer>(event_ns, fcn);
 
+    // Timer coalescing: if there's already a timer within ±0.5ms, align to it
+    // This reduces the number of wake-ups by grouping near-simultaneous events
+    const int64 COALESCE_WINDOW_NS = 500000; // 0.5ms
+    for (const auto& existing : m_timer) {
+        if (existing && abs(existing->m_expires_ns - event_ns) <= COALESCE_WINDOW_NS) {
+            // Align to the earlier time to avoid delaying events
+            event_ns = std::min(event_ns, existing->m_expires_ns);
+            break;
+        }
+    }
+
+    auto tmr = std::make_shared<Timer>(event_ns, fcn);
     m_timer.push_back(tmr);
     m_trigger_ns = firstEvent();
 
@@ -219,6 +238,34 @@ void Scheduler::creditTimer()
     for (auto &t : retired) {
         (t->m_callback)();
     }
+}
+
+// Get the absolute time (ns) when the next timer will fire
+std::optional<int64>
+Scheduler::getNextTimerTime() const noexcept
+{
+    if (m_timer.empty()) {
+        return std::nullopt;
+    }
+    return m_trigger_ns;
+}
+
+// Get milliseconds until next timer expires
+std::optional<int64>
+Scheduler::getMillisecondsUntilNext() const noexcept
+{
+    if (m_timer.empty()) {
+        return std::nullopt;
+    }
+
+    int64 delta_ns = m_trigger_ns - m_time_ns;
+
+    if (delta_ns <= 0) {
+        return 0;  // Timer is overdue
+    }
+
+    // Convert nanoseconds to milliseconds, rounding up
+    return (delta_ns + 999999) / 1000000;
 }
 
 // vim: ts=8:et:sw=4:smarttab
