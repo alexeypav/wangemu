@@ -762,7 +762,11 @@ IoCardDisk::tcbSector(int arg)
     int drive = arg;
 
     assert(drive >= 0 && drive < numDrives());
-    assert(m_d[drive].tmr_sector != nullptr);
+
+    // Defensive check: timer may have been cancelled by doLoad() during callback
+    if (m_d[drive].tmr_sector == nullptr) {
+        return; // Timer was cancelled, nothing to do
+    }
 
     if (false && (NOISY > 2)) {
         dbglog("Drive %d SECTOR timer fired: sector %d\n", drive, m_d[drive].sector);

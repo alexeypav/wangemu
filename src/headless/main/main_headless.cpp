@@ -383,9 +383,11 @@ int main(int argc, char* argv[]) {
             }
             auto deadline = nextSlice;
 
-            // Consider next timer expiration (with safety cap)
+            // Consider next timer expiration (with minimum interval to prevent busy loops)
             if (auto timerMs = scheduler->getMillisecondsUntilNext()) {
-                auto timerDeadline = now + std::chrono::milliseconds(*timerMs);
+                // Enforce minimum 1ms to prevent zero-timeout busy loops when timers are overdue
+                auto safeTimerMs = std::max(*timerMs, static_cast<int64>(1));
+                auto timerDeadline = now + std::chrono::milliseconds(safeTimerMs);
                 deadline = std::min(deadline, timerDeadline);
             }
 

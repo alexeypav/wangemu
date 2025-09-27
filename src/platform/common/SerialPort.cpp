@@ -797,8 +797,8 @@ void SerialPort::receiveThreadProc()
             }
         }
 
-        // Use poll() with 20ms timeout for good balance between responsiveness and CPU usage
-        int result = poll(pfds, nfds, 20);
+        // Use poll() with 50ms timeout optimized for ARM systems (good responsiveness, lower CPU)
+        int result = poll(pfds, nfds, 50);
         
         if (result > 0) {
             // Check for cancellation signal
