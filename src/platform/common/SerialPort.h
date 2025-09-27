@@ -159,6 +159,16 @@ private:
     OVERLAPPED m_writeOverlapped;
     HANDLE m_readEvent;
     HANDLE m_writeEvent;
+
+    // Windows-specific TX queue management
+    std::queue<uint8> m_txQueue;
+    std::atomic<bool> m_txBusy{false};
+    std::shared_ptr<Timer> m_txTimer;
+
+    // Windows-specific methods
+    void transmitByte(uint8 byte);
+    void onTransmitComplete();
+    int64 calculateTransmitDelay() const;
 #else
     int m_fd;                   // POSIX file descriptor
     int m_cancelPipe[2];        // pipe for thread cancellation
