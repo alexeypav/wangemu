@@ -1262,7 +1262,7 @@ bool
 platterHasValidCatalog(Wvd *wvd, int p)
 {
     assert(wvd != nullptr);
-    uint8 sector_buff[257]; // 256B of data plus an LRC byte
+    uint8 sector_buff[257] = {}; // 256B of data plus an LRC byte
 
     // get sector 0 of the platter;
     // the first 16 bytes contains info about the index/catalog structure
@@ -1350,7 +1350,7 @@ bool
 IoCardDisk::platterHasBit15Problem(Wvd *wvd, int p, bool fix_it)
 {
     assert(wvd != nullptr);
-    uint8 sector_buff[257]; // 256B of data plus an LRC byte
+    uint8 sector_buff[257] = {}; // 256B of data plus an LRC byte
 
     // get sector 0 of the platter;
     // the first 16 bytes contains info about the index/catalog structure

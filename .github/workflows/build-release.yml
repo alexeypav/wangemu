@@ -6,46 +6,47 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-terminal-server:
+  build-arm-release:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [x86_64, aarch64]
     
     steps:
     - uses: actions/checkout@v4
     
-    - name: Install build dependencies
+    - name: Install cross-compiler
       run: |
         sudo apt update
-        sudo apt install -y build-essential
-        if [ "${{ matrix.arch }}" = "aarch64" ]; then
-          sudo apt install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-        fi
+        sudo apt install -y build-essential gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
     
-    - name: Build terminal server
+    - name: Build ARM64 terminal server
       run: |
-        if [ "${{ matrix.arch }}" = "x86_64" ]; then
-          make -f makefile.terminal-server opt
-          mv wangemu-terminal-server wangemu-terminal-server-x86_64
-        else
-          make -f makefile.terminal-server-aarch64 opt
-        fi
+        make -f makefile.terminal-server-aarch64 clean
+        make -f makefile.terminal-server-aarch64 opt
+    
+    - name: Create release package
+      run: |
+        mkdir -p release-package
+        cp wangemu-terminal-server-aarch64 release-package/
+        cp setup-startup.sh release-package/
+        cp start-wangemu.sh release-package/
+        chmod +x release-package/*
+        cd release-package
+        zip -r ../wangemu-raspberry-pi-v${GITHUB_REF#refs/tags/}.zip *
+        cd ..
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: wangemu-terminal-server-${{ matrix.arch }}
-        path: wangemu-terminal-server-*
+        name: wangemu-raspberry-pi-package
+        path: release-package/
         retention-days: 90
     
-    - name: Upload to release
+    - name: Upload release package to release
       if: github.event_name == 'release'
       uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./wangemu-terminal-server-${{ matrix.arch }}
-        asset_name: wangemu-terminal-server-${{ matrix.arch }}
-        asset_content_type: application/octet-stream
+        asset_path: ./wangemu-raspberry-pi-v${{ github.ref_name }}.zip
+        asset_name: wangemu-raspberry-pi-${{ github.ref_name }}.zip
+        asset_content_type: application/zip

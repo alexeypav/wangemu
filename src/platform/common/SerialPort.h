@@ -135,9 +135,9 @@ private:
     void receiveThreadProc();
     void processReceivedByte(uint8 byte);
 
-    // Serial port transmission with timing
-    void transmitByte(uint8 byte);
-    void onTransmitComplete();
+    // Serial port transmission with batching
+    void enqueueTx(const uint8_t* data, size_t len);
+    bool flushTxBuffer();
 
     std::shared_ptr<Scheduler> m_scheduler;
     std::shared_ptr<Terminal> m_terminal;
@@ -163,11 +163,9 @@ private:
     std::thread m_receiveThread;
     std::atomic<bool> m_stopReceiving;
 
-    // Transmit queue and timing (model serial UART delays)
-    std::queue<uint8> m_txQueue;
+    // Transmit buffer for batched writes (eliminates per-byte syscalls)
+    std::vector<uint8_t> m_outbuf;
     mutable std::recursive_mutex m_txMutex;  // mutable for const methods
-    std::shared_ptr<Timer> m_txTimer;
-    bool m_txBusy;
 
     // Configuration
     SerialConfig m_config;
@@ -192,8 +190,6 @@ private:
     bool attemptReconnect();
     int getReconnectDelayMs() const;
 
-    // Calculate transmission delay based on baud rate and settings
-    int64 calculateTransmitDelay() const;
 };
 
 #endif // _INCLUDE_SERIAL_PORT_H_

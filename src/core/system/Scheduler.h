@@ -6,6 +6,7 @@
 #define _INCLUDE_SCHEDULER_H_
 
 #include "w2200.h"  // pick up def of int32
+#include <optional>
 
 
 // when a timer expires, we invoke the callback function
@@ -49,6 +50,14 @@ class Scheduler
 public:
     Scheduler();
     bool hasPendingTimers() const noexcept { return !m_timer.empty(); }
+
+    // Get the absolute time (ns) when the next timer will fire
+    // Returns nullopt if no timers are pending
+    std::optional<int64> getNextTimerTime() const noexcept;
+
+    // Get milliseconds until next timer expires
+    // Returns nullopt if no timers pending, 0 if overdue
+    std::optional<int64> getMillisecondsUntilNext() const noexcept;
     // create a new timer
     // ticks is the number of clock ticks before the callback fires,
     // passing back the stored arg. e.g.,

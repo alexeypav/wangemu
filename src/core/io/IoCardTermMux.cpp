@@ -146,7 +146,7 @@ IoCardTermMux::IoCardTermMux(std::shared_ptr<Scheduler> scheduler,
 
     // create all the terminals
     auto const cpu_type = m_cpu->getCpuType();
-    const bool vp_mode = (cpu_type != Cpu2200::CPUTYPE_2200B)
+    [[maybe_unused]] const bool vp_mode = (cpu_type != Cpu2200::CPUTYPE_2200B)
                       && (cpu_type != Cpu2200::CPUTYPE_2200T);
     for(int n=0; n<m_num_terms; n++) {
         // Check if this terminal should use COM port

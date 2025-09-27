@@ -1208,6 +1208,7 @@ Cpu2200t::execOneOp()
 
     case OP_BER_INC:    // branch if R[AAAA] == R[BBBB]
         NIBBLE_INC(m_cpu.pc, pc_inc);
+        [[fallthrough]];
     case OP_BER:        // branch if R[AAAA] == R[BBBB]
         if (a_op == b_op) { m_cpu.ic = static_cast<uint16>(puop->p16); }
         else              { ++m_cpu.ic; }
@@ -1215,6 +1216,7 @@ Cpu2200t::execOneOp()
 
     case OP_BNR_INC:    // branch if R[AAAA] != R[BBBB]
         NIBBLE_INC(m_cpu.pc, pc_inc);
+        [[fallthrough]];
     case OP_BNR:        // branch if R[AAAA] != R[BBBB]
         if (a_op != b_op) { m_cpu.ic = static_cast<uint16>(puop->p16); }
         else              { ++m_cpu.ic; }

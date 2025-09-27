@@ -305,7 +305,7 @@ void SerialPort::receiveThreadProc()
 
         DWORD err = GetLastError();
         if (err == ERROR_IO_PENDING) {
-            DWORD wait = WaitForSingleObject(m_readEvent, 100); // poll ~10Hz
+            DWORD wait = WaitForSingleObject(m_readEvent, 100); // poll ~10Hz - good balance for terminal communication
             if (wait == WAIT_OBJECT_0) {
                 if (GetOverlappedResult(m_handle, &m_readOverlapped, &bytesRead, FALSE)) {
                     for (DWORD i=0; i<bytesRead; ++i) processReceivedByte(buffer[i]);
@@ -477,6 +477,7 @@ void SerialPort::flushTxQueue()
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/select.h>
+#include <poll.h>
 #include <errno.h>
 #include <cstring>
 #include <cassert>
@@ -501,9 +502,7 @@ static speed_t baudRateToSpeed(uint32_t baudRate) {
 SerialPort::SerialPort(std::shared_ptr<Scheduler> scheduler) :
     m_scheduler(std::move(scheduler)),
     m_fd(-1),
-    m_stopReceiving(false),
-    m_txBusy(false),
-    m_txTimer(nullptr)
+    m_stopReceiving(false)
 {
     // Initialize cancellation pipe
     m_cancelPipe[0] = m_cancelPipe[1] = -1;
@@ -533,8 +532,8 @@ bool SerialPort::open(const SerialConfig &config)
 
     m_config = config;
 
-    // Open the serial port with non-blocking I/O
-    m_fd = ::open(config.portName.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
+    // Open the serial port in blocking mode for more efficient I/O
+    m_fd = ::open(config.portName.c_str(), O_RDWR | O_NOCTTY);
     if (m_fd == -1) {
         dbglog("SerialPort::open() - Failed to open %s: %s\n",
                config.portName.c_str(), strerror(errno));
@@ -607,9 +606,9 @@ bool SerialPort::open(const SerialConfig &config)
     cfsetispeed(&tty, speed);
     cfsetospeed(&tty, speed);
 
-    // Set non-canonical mode with timeout
-    tty.c_cc[VMIN] = 0;   // Don't block waiting for input
-    tty.c_cc[VTIME] = 1;  // Wait up to 0.1 seconds
+    // Set blocking mode for byte-granular reads with minimal timeout
+    tty.c_cc[VMIN] = 1;   // Block until at least 1 byte available
+    tty.c_cc[VTIME] = 1;  // 0.1 second inter-byte timeout (keeps latency low)
 
     // Apply the configuration
     if (tcsetattr(m_fd, TCSANOW, &tty) != 0) {
@@ -649,13 +648,10 @@ void SerialPort::close()
     ::close(m_fd);
     m_fd = -1;
 
-    // Clear TX state/queue
+    // Clear TX buffer
     {
         std::lock_guard<std::recursive_mutex> lock(m_txMutex);
-        std::queue<uint8> empty;
-        std::swap(m_txQueue, empty);
-        m_txBusy = false;
-        m_txTimer = nullptr;
+        m_outbuf.clear();
     }
     
     // Update connection state
@@ -672,7 +668,7 @@ bool SerialPort::isOpen() const
 size_t SerialPort::getTxQueueSize() const
 {
     std::lock_guard<std::recursive_mutex> lock(m_txMutex);
-    return m_txQueue.size();
+    return m_outbuf.size();
 }
 
 bool SerialPort::isTxQueueNearFull(float threshold) const
@@ -684,11 +680,9 @@ bool SerialPort::isTxQueueNearFull(float threshold) const
 void SerialPort::flushTxQueue()
 {
     std::lock_guard<std::recursive_mutex> lock(m_txMutex);
-    // Clear the TX queue without sending the bytes
-    while (!m_txQueue.empty()) {
-        m_txQueue.pop();
-    }
-    dbglog("SerialPort::flushTxQueue() - Cleared TX queue for %s\n", m_config.portName.c_str());
+    // Clear the TX buffer without sending the bytes
+    m_outbuf.clear();
+    dbglog("SerialPort::flushTxQueue() - Cleared TX buffer for %s\n", m_config.portName.c_str());
 }
 
 void SerialPort::attachTerminal(std::shared_ptr<Terminal> terminal)
@@ -713,30 +707,17 @@ void SerialPort::sendByte(uint8 byte)
         return;
     }
 
-    std::lock_guard<std::recursive_mutex> lock(m_txMutex);
-
-    // Use configurable TX queue size
-    if (m_txQueue.size() >= m_config.txQueueSize) {
-        dbglog("SerialPort::sendByte() - TX queue full (%u), drop 0x%02X\n",
-               (unsigned)m_txQueue.size(), byte);
-        return;
-    }
-
-    m_txQueue.push(byte);
-
-    if (!m_txBusy) {
-        // kick off first byte
-        uint8 b = m_txQueue.front();
-        m_txQueue.pop();
-        transmitByte(b);
-    }
+    enqueueTx(&byte, 1);
 }
 
 void SerialPort::sendData(const uint8 *data, size_t length)
 {
-    for (size_t i = 0; i < length; ++i) {
-        sendByte(data[i]);
+    if (!isOpen()) {
+        dbglog("SerialPort::sendData() - port closed, drop %zu bytes\n", length);
+        return;
     }
+
+    enqueueTx(data, length);
 }
 
 void SerialPort::sendXON()
@@ -792,25 +773,36 @@ void SerialPort::stopReceiving()
 void SerialPort::receiveThreadProc()
 {
     uint8 buffer[512];
-    fd_set readfds;
-    int maxfd = std::max(m_fd, m_cancelPipe[0]);
+    pollfd pfds[2];
+    int nfds = 1;
+
+    // Setup poll descriptors
+    pfds[0].fd = m_fd;
+    pfds[0].events = POLLIN; // Always monitor for RX data
+
+    if (m_cancelPipe[0] != -1) {
+        pfds[1].fd = m_cancelPipe[0];
+        pfds[1].events = POLLIN;
+        nfds = 2;
+    }
 
     while (!m_stopReceiving && isOpen()) {
-        FD_ZERO(&readfds);
-        FD_SET(m_fd, &readfds);
-        if (m_cancelPipe[0] != -1) {
-            FD_SET(m_cancelPipe[0], &readfds);
+        // Check if we have data to send and update POLLOUT accordingly
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_txMutex);
+            if (!m_outbuf.empty()) {
+                pfds[0].events = POLLIN | POLLOUT; // Monitor both RX and TX
+            } else {
+                pfds[0].events = POLLIN; // Only monitor RX
+            }
         }
 
-        struct timeval timeout;
-        timeout.tv_sec = 0;
-        timeout.tv_usec = 100000; // 100ms timeout
-
-        int result = select(maxfd + 1, &readfds, nullptr, nullptr, &timeout);
+        // Use poll() with 20ms timeout for good balance between responsiveness and CPU usage
+        int result = poll(pfds, nfds, 20);
         
         if (result > 0) {
             // Check for cancellation signal
-            if (m_cancelPipe[0] != -1 && FD_ISSET(m_cancelPipe[0], &readfds)) {
+            if (nfds > 1 && (pfds[1].revents & POLLIN)) {
                 char dummy;
                 ssize_t readResult = read(m_cancelPipe[0], &dummy, 1);
                 (void)readResult; // suppress unused variable warning
@@ -818,7 +810,7 @@ void SerialPort::receiveThreadProc()
             }
 
             // Check for data on serial port
-            if (FD_ISSET(m_fd, &readfds)) {
+            if (pfds[0].revents & POLLIN) {
                 ssize_t bytesRead = read(m_fd, buffer, sizeof(buffer));
                 if (bytesRead > 0) {
                     for (ssize_t i = 0; i < bytesRead; ++i) {
@@ -874,6 +866,11 @@ void SerialPort::receiveThreadProc()
                     }
                 }
             }
+
+            // Check if we can send data (TX ready)
+            if (pfds[0].revents & POLLOUT) {
+                flushTxBuffer();
+            }
         } else if (result == -1 && errno != EINTR) {
             dbglog("SerialPort::receiveThreadProc - select failed: %s, attempting reconnection\n", strerror(errno));
             m_connected.store(false);
@@ -890,8 +887,8 @@ void SerialPort::receiveThreadProc()
                 
                 if (attemptReconnect()) {
                     dbglog("SerialPort::receiveThreadProc - Reconnection successful\n");
-                    // Update maxfd after reconnection
-                    maxfd = std::max(m_fd, m_cancelPipe[0]);
+                    // Update poll descriptors after reconnection
+                    pfds[0].fd = m_fd;
                     continue; // Continue with the loop
                 } else {
                     dbglog("SerialPort::receiveThreadProc - Reconnection failed\n");
@@ -927,82 +924,6 @@ void SerialPort::processReceivedByte(uint8 byte)
 #endif
 }
 
-void SerialPort::transmitByte(uint8 byte)
-{
-    if (!isOpen()) return;
-    
-    // Capture for debugging if enabled
-    if (m_captureCallback) {
-        m_captureCallback(byte, false);  // false = TX
-    }
-
-    {
-        std::lock_guard<std::recursive_mutex> lock(m_txMutex);
-        m_txBusy = true;
-    }
-
-    // For POSIX, we do blocking write since it's typically fast
-    ssize_t written = write(m_fd, &byte, 1);
-    if (written != 1) {
-        dbglog("SerialPort::transmitByte - write failed: %s\n", 
-               written == -1 ? strerror(errno) : "partial write");
-        std::lock_guard<std::recursive_mutex> lock(m_txMutex);
-        m_txBusy = false;
-        return;
-    }
-    
-    // Successfully transmitted a byte
-    m_txByteCount.fetch_add(1);
-
-    // Model UART character time
-    int64 delay = calculateTransmitDelay();
-    if (delay < 1000000) delay = 1000000; // floor ~1ms
-    m_txTimer = m_scheduler->createTimer(
-        delay,
-        std::bind(&SerialPort::onTransmitComplete, this)
-    );
-}
-
-void SerialPort::onTransmitComplete()
-{
-    if (!isOpen()) {
-        std::lock_guard<std::recursive_mutex> lock(m_txMutex);
-        m_txBusy = false;
-        std::queue<uint8> empty;
-        std::swap(m_txQueue, empty);
-        m_txTimer = nullptr;
-        return;
-    }
-
-    uint8 next = 0;
-    bool have = false;
-    {
-        std::lock_guard<std::recursive_mutex> lock(m_txMutex);
-        m_txBusy = false;
-        if (!m_txQueue.empty()) {
-            next = m_txQueue.front();
-            m_txQueue.pop();
-            have = true;
-            m_txBusy = true; // claim for next write
-        }
-    }
-    if (have) {
-        transmitByte(next);
-    }
-}
-
-int64 SerialPort::calculateTransmitDelay() const
-{
-    // (start + data + parity + stop) / baud → seconds
-    double bitsPerChar = 1.0;                  // start
-    bitsPerChar += m_config.dataBits;          // data
-    if (m_config.parity != NOPARITY) bitsPerChar += 1.0;
-    bitsPerChar += (m_config.stopBits == ONESTOPBIT) ? 1.0 : 2.0;
-
-    // return nanoseconds (scheduler units)
-    double charTimeUs = (bitsPerChar * 1.0e6) / m_config.baudRate;
-    return static_cast<int64>(charTimeUs * 1000.0);
-}
 
 bool SerialPort::attemptReconnect()
 {
@@ -1019,6 +940,68 @@ bool SerialPort::attemptReconnect()
     }
     return open(m_config);
 #endif
+}
+
+void SerialPort::enqueueTx(const uint8_t* data, size_t len)
+{
+    if (!isOpen() || len == 0) {
+        return;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(m_txMutex);
+
+    // Check buffer size limit
+    if (m_outbuf.size() + len > m_config.txQueueSize) {
+        dbglog("SerialPort::enqueueTx() - TX buffer full (%zu + %zu > %zu), dropping data\n",
+               m_outbuf.size(), len, m_config.txQueueSize);
+        return;
+    }
+
+    // Append data to output buffer
+    m_outbuf.insert(m_outbuf.end(), data, data + len);
+
+#ifdef WANGEMU_TX_DEBUG
+    dbglog("SerialPort::enqueueTx() - Added %zu bytes, buffer now %zu bytes\n",
+           len, m_outbuf.size());
+#endif
+}
+
+bool SerialPort::flushTxBuffer()
+{
+    if (!isOpen()) {
+        return false;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(m_txMutex);
+
+    if (m_outbuf.empty()) {
+        return false; // Nothing to send
+    }
+
+    // Try to write as much as the kernel will accept
+    ssize_t written = write(m_fd, m_outbuf.data(), m_outbuf.size());
+    if (written > 0) {
+        // Update TX byte counter
+        m_txByteCount.fetch_add(written);
+
+        // Remove sent bytes from buffer
+        m_outbuf.erase(m_outbuf.begin(), m_outbuf.begin() + written);
+
+#ifdef WANGEMU_TX_DEBUG
+        dbglog("SerialPort::flushTxBuffer() - Wrote %zd bytes, %zu remain\n",
+               written, m_outbuf.size());
+#endif
+
+        return true; // Successfully sent some data
+    } else if (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        // Kernel buffer full, try again later
+        return false;
+    } else {
+        // Real error
+        dbglog("SerialPort::flushTxBuffer() - write failed: %s\n",
+               written == -1 ? strerror(errno) : "partial write");
+        return false;
+    }
 }
 
 int SerialPort::getReconnectDelayMs() const

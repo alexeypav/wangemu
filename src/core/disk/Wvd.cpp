@@ -515,7 +515,7 @@ Wvd::readHeader()
     m_num_platters = 1;
     m_num_platter_sectors = 1;
 
-    uint8 data[256];
+    uint8 data[256] = {};
     const bool ok = rawReadSector(0, &data[0]);
     if (!ok) {
         return false;

@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <sstream>
 #include <iostream>
+#include <chrono>
+#include <thread>
 #undef min
 #undef max
 // ----------------------------------------------------------------------------
@@ -550,6 +552,7 @@ system2200::setConfig(const SysCfgState &new_cfg)
             assert(false);
             cpu_type = Cpu2200::CPUTYPE_2200T;
             // fall through in non-debug build if config type is invalid
+            [[fallthrough]];
         case Cpu2200::CPUTYPE_2200B:
         case Cpu2200::CPUTYPE_2200T:
             cpu = std::make_shared<Cpu2200t>(scheduler, ram_size, cpu_type);
@@ -776,7 +779,27 @@ case RUNNING: {
                 }
             }
 
-            host::sleep(0);
+            // Use absolute deadline-based sleeping to prevent excessive wakeups
+            using clock = std::chrono::steady_clock;
+            static auto next_slice = clock::now();
+            const auto slice_duration = std::chrono::milliseconds(30); // Match main loop slice duration
+
+            auto now = clock::now();
+            next_slice = std::max(next_slice + slice_duration, now + std::chrono::milliseconds(1));
+            auto deadline = next_slice;
+
+            // Consider scheduler timers for deadline calculation
+            if (scheduler) {
+                if (auto timerMs = scheduler->getMillisecondsUntilNext()) {
+                    auto timerDeadline = now + std::chrono::milliseconds(*timerMs);
+                    deadline = std::min(deadline, timerDeadline);
+                }
+            }
+
+            // Absolute sleep until deadline (replaces multiple relative sleeps)
+            if (deadline > now) {
+                std::this_thread::sleep_until(deadline);
+            }
         }
 #endif // HEADLESS_BUILD
         if (cpu) {
@@ -848,11 +871,12 @@ system2200::emulateTimeslice(int ts_ms)
 
     if ((offset > 0) && isCpuSpeedRegulated()) {
 
-        // we are running ahead of schedule; kill some time.
-        // we don't kill the full amount because the sleep function is
-        // allowed to, and very well might, sleep longer than we asked.
+        // we are running ahead of schedule; use absolute deadline sleep.
+        // Convert offset to absolute deadline to prevent multiple relative sleeps
+        using clock = std::chrono::steady_clock;
         const unsigned int ioffset = static_cast<unsigned int>(offset & 0xFFFLL);  // bottom 4 sec or so
-        host::sleep(ioffset/2);
+        auto deadline = clock::now() + std::chrono::milliseconds(ioffset/2);
+        std::this_thread::sleep_until(deadline);
 
     } else {
 
@@ -1045,8 +1069,24 @@ system2200::emulateTimeslice(int ts_ms)
             }
         }
 
-        // at least yield so we don't hog the whole machine
-        host::sleep(0);
+        // Use absolute deadline sleep to prevent excessive CPU usage and reduce wakeups
+        // Replaced relative sleep(1) with absolute deadline to avoid repeated nanosleep calls
+        using clock = std::chrono::steady_clock;
+        static auto next_deadline = clock::now();
+        const auto min_sleep = std::chrono::milliseconds(1);
+
+        auto now = clock::now();
+        next_deadline = std::max(next_deadline + min_sleep, now + min_sleep);
+
+        // Consider scheduler timers for better coordination
+        if (scheduler) {
+            if (auto timerMs = scheduler->getMillisecondsUntilNext()) {
+                auto timerDeadline = now + std::chrono::milliseconds(*timerMs);
+                next_deadline = std::min(next_deadline, timerDeadline);
+            }
+        }
+
+        std::this_thread::sleep_until(next_deadline);
     }
 }
 

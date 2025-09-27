@@ -311,7 +311,7 @@ static dasminfo_t mnemonics[256] = {
     /* fc */ { 3,  "CM   ##H",    "" },
     /* fd */ { 1,  "DB   0FDH",   "" },
     /* fe */ { 2,  "CPI  #H",     "A=rapb" },
-    /* ff */ { 1,  "RST  7"       "" },
+    /* ff */ { 1,  "RST  7",       "" },
 };
 
 // disassemble the instruction at the given address into a pre-allocated
