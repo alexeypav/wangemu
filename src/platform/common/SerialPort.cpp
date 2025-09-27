@@ -323,12 +323,19 @@ void SerialPort::processReceivedByte(uint8 byte)
 {
     // Increment RX counter
     m_rxByteCount.fetch_add(1);
-    
+
+    // Track activity for adaptive timing
+    {
+        std::lock_guard<std::mutex> lock(m_activityMutex);
+        m_lastRxTime = std::chrono::steady_clock::now();
+    }
+    m_recentRxBytes.fetch_add(1);
+
     // Capture for debugging if enabled
     if (m_captureCallback) {
         m_captureCallback(byte, true);  // true = RX
     }
-    
+
     // Send to MXD callback first (for COM port mode)
     if (m_rxCallback) {
         m_rxCallback(byte);
@@ -707,7 +714,27 @@ void SerialPort::sendByte(uint8 byte)
         return;
     }
 
-    enqueueTx(&byte, 1);
+    // Direct write for responsive terminal display
+    ssize_t written = write(m_fd, &byte, 1);
+    if (written == 1) {
+        m_txByteCount.fetch_add(1);
+        if (m_captureCallback) {
+            m_captureCallback(byte, false); // false = TX
+        }
+
+        // Track activity for adaptive timing
+        {
+            std::lock_guard<std::mutex> lock(m_activityMutex);
+            m_lastTxTime = std::chrono::steady_clock::now();
+        }
+        m_recentTxBytes.fetch_add(1);
+    } else if (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        // Port busy, try enqueueTx as fallback
+        enqueueTx(&byte, 1);
+    } else if (written != 1) {
+        dbglog("SerialPort::sendByte() - write failed: %s\n",
+               written == -1 ? strerror(errno) : "partial write");
+    }
 }
 
 void SerialPort::sendData(const uint8 *data, size_t length)
@@ -717,7 +744,34 @@ void SerialPort::sendData(const uint8 *data, size_t length)
         return;
     }
 
-    enqueueTx(data, length);
+    // Try direct write first for responsive display
+    ssize_t written = write(m_fd, data, length);
+    if (written > 0) {
+        m_txByteCount.fetch_add(written);
+        if (m_captureCallback) {
+            for (ssize_t i = 0; i < written; i++) {
+                m_captureCallback(data[i], false); // false = TX
+            }
+        }
+
+        // Track activity for adaptive timing
+        {
+            std::lock_guard<std::mutex> lock(m_activityMutex);
+            m_lastTxTime = std::chrono::steady_clock::now();
+        }
+        m_recentTxBytes.fetch_add(written);
+
+        // If partial write, queue the remaining data
+        if (static_cast<size_t>(written) < length) {
+            enqueueTx(data + written, length - written);
+        }
+    } else if (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        // Port busy, queue all data
+        enqueueTx(data, length);
+    } else {
+        dbglog("SerialPort::sendData() - write failed: %s\n",
+               written == -1 ? strerror(errno) : "write returned 0");
+    }
 }
 
 void SerialPort::sendXON()
@@ -797,8 +851,8 @@ void SerialPort::receiveThreadProc()
             }
         }
 
-        // Use poll() with 50ms timeout optimized for ARM systems (good responsiveness, lower CPU)
-        int result = poll(pfds, nfds, 50);
+        // Use poll() with 10ms timeout for responsive terminal display
+        int result = poll(pfds, nfds, 10);
         
         if (result > 0) {
             // Check for cancellation signal
@@ -905,12 +959,19 @@ void SerialPort::processReceivedByte(uint8 byte)
 {
     // Increment RX counter
     m_rxByteCount.fetch_add(1);
-    
+
+    // Track activity for adaptive timing
+    {
+        std::lock_guard<std::mutex> lock(m_activityMutex);
+        m_lastRxTime = std::chrono::steady_clock::now();
+    }
+    m_recentRxBytes.fetch_add(1);
+
     // Capture for debugging if enabled
     if (m_captureCallback) {
         m_captureCallback(byte, true);  // true = RX
     }
-    
+
     // Send to MXD callback first (for COM port mode)
     if (m_rxCallback) {
         m_rxCallback(byte);
@@ -964,6 +1025,9 @@ void SerialPort::enqueueTx(const uint8_t* data, size_t len)
     dbglog("SerialPort::enqueueTx() - Added %zu bytes, buffer now %zu bytes\n",
            len, m_outbuf.size());
 #endif
+
+    // Try immediate flush for responsive display (non-blocking)
+    flushTxBuffer();
 }
 
 bool SerialPort::flushTxBuffer()
@@ -1010,6 +1074,41 @@ int SerialPort::getReconnectDelayMs() const
     // Exponential backoff: 250ms, 500ms, 1s, 2s, 4s, 8s, capped at 10s
     int delay = BASE_RECONNECT_DELAY_MS * (1 << std::min(attempts, 5));
     return std::min(delay, 10000); // Cap at 10 seconds
+}
+
+// Activity tracking for adaptive timing
+bool SerialPort::hasRecentActivity()
+{
+    auto now = std::chrono::steady_clock::now();
+    constexpr auto ACTIVITY_WINDOW = std::chrono::milliseconds(100);
+    constexpr auto RESET_WINDOW = std::chrono::milliseconds(200);
+
+    std::lock_guard<std::mutex> lock(m_activityMutex);
+
+    // Periodically reset counters to prevent overflow and ensure fresh data
+    static auto lastReset = std::chrono::steady_clock::time_point{};
+    if (lastReset == std::chrono::steady_clock::time_point{} || now - lastReset > RESET_WINDOW) {
+        m_recentTxBytes.store(0);
+        m_recentRxBytes.store(0);
+        lastReset = now;
+    }
+
+    // Simplified activity detection - any recent TX/RX within 100ms counts as activity
+    // This prevents the freeze issues during gaming
+    bool recentTx = (now - m_lastTxTime < ACTIVITY_WINDOW);
+    bool recentRx = (now - m_lastRxTime < ACTIVITY_WINDOW);
+
+    return recentTx || recentRx;  // Any recent activity counts
+}
+
+uint32_t SerialPort::getRecentTxBytes() const
+{
+    return m_recentTxBytes.load();
+}
+
+uint32_t SerialPort::getRecentRxBytes() const
+{
+    return m_recentRxBytes.load();
 }
 
 #endif // _WIN32

@@ -113,6 +113,11 @@ public:
     uint64_t getRxByteCount() const { return m_rxByteCount.load(); }
     uint64_t getTxByteCount() const { return m_txByteCount.load(); }
     void resetCounters() { m_rxByteCount.store(0); m_txByteCount.store(0); }
+
+    // Activity tracking for adaptive timing
+    bool hasRecentActivity();  // Activity in last 100ms (non-const for counter reset)
+    uint32_t getRecentTxBytes() const;
+    uint32_t getRecentRxBytes() const;
     
     // TX queue status for backpressure handling
     size_t getTxQueueSize() const;
@@ -173,6 +178,13 @@ private:
     // Statistics counters (thread-safe) - ensure proper alignment for ARM64
     alignas(std::atomic<uint64_t>) std::atomic<uint64_t> m_rxByteCount{0};
     alignas(std::atomic<uint64_t>) std::atomic<uint64_t> m_txByteCount{0};
+
+    // Activity tracking for adaptive timing (thread-safe)
+    mutable std::mutex m_activityMutex;
+    std::chrono::steady_clock::time_point m_lastTxTime;
+    std::chrono::steady_clock::time_point m_lastRxTime;
+    alignas(std::atomic<uint32_t>) std::atomic<uint32_t> m_recentTxBytes{0};
+    alignas(std::atomic<uint32_t>) std::atomic<uint32_t> m_recentRxBytes{0};
     
     // Application-level flow control state
     alignas(std::atomic<bool>) std::atomic<bool> m_xoffSent{false};
