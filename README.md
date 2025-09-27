@@ -1,6 +1,6 @@
 # Modified Wang Emulator
 
-This is a modified version of the original wangemu, forked from [jtbattle/wangemu](https://github.com/jtbattle/wangemu), added support to run as a "Real Terminal Server/Wang 2200 Mutli User System" for connecting terminals over the host's serial ports and running on linux without gui/wxwidget dependencies.
+This is a modified version of the original wangemu, forked from [jtbattle/wangemu](https://github.com/jtbattle/wangemu), added support to run as a "Real Terminal Server/Wang 2200 Multi User System" for connecting terminals over the host's serial ports and running on linux without gui/wxwidget dependencies.
 
 For the GUI/Original version; added a Terminal mode (select the 2336DW in the CPU menu) to use the host's serial ports to connect to a real Wang2200 system
 
