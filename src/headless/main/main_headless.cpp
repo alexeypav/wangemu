@@ -313,10 +313,20 @@ int main(int argc, char* argv[]) {
         auto lastStatsTime = clock::now();
         auto lastRetryTime = clock::now();
         auto nextSlice = clock::now();
-        const auto sliceDuration = std::chrono::milliseconds(30); // 30ms slices for good balance
+        const auto sliceDuration = std::chrono::milliseconds(300); // 300ms slices - quantum will limit for responsiveness
 
         // Get the scheduler for deadline calculations
         auto scheduler = termMux->getScheduler();
+
+        // Adaptive quantum timing state
+        static std::chrono::milliseconds quantum{4}; // start responsive
+        constexpr auto QMIN = std::chrono::milliseconds(2);  // active gaming
+        constexpr auto QMAX = std::chrono::milliseconds(200); // idle efficiency (~5 wakeups/sec)
+
+        // Rate limiting for rapid timer loops
+        static auto lastRapidTimer = clock::now();
+        static int rapidTimerCount = 0;
+        static int totalRapidTimers = 0; // Track total over time window
 
         while (running) {
             // Check for status dump request
@@ -379,28 +389,119 @@ int main(int argc, char* argv[]) {
                     }
                 } while (nextSlice <= now);
             } else {
-                nextSlice += sliceDuration;
+                // If we're not behind, set next slice to a reasonable future time
+                nextSlice = now + sliceDuration;
             }
             auto deadline = nextSlice;
 
-            // Consider next timer expiration (with minimum interval to prevent busy loops)
-            if (auto timerMs = scheduler->getMillisecondsUntilNext()) {
-                // Enforce minimum 1ms to prevent zero-timeout busy loops when timers are overdue
-                auto safeTimerMs = std::max(*timerMs, static_cast<int64>(1));
-                auto timerDeadline = now + std::chrono::milliseconds(safeTimerMs);
-                deadline = std::min(deadline, timerDeadline);
+            // Adaptive quantum algorithm - check for activity and CPU falling behind
+            bool recentSerial = false;
+            for (const auto& session : sessions) {
+                if (session && session->isActive()) {
+                    auto serialPort = session->getSerialPort();
+                    if (serialPort && serialPort->hasRecentActivity()) {
+                        recentSerial = true;
+                        break;
+                    }
+                }
+            }
+            bool fellBehind = (nextSlice <= now);
+
+            // Adapt quantum based on activity
+            if (recentSerial || fellBehind) {
+                quantum = QMIN;  // stay responsive for terminals/gaming
+            } else {
+                quantum = std::min(QMAX, quantum * 2); // exponential backoff when idle
             }
 
-            // Consider stats and retry intervals (but don't let them dominate)
-            auto statsDeadline = lastStatsTime + std::chrono::seconds(30);
-            auto retryDeadline = lastRetryTime + std::chrono::seconds(30);
+            // Handle timer expiration - but enforce quantum as hard minimum
+            if (auto timerMs = scheduler->getMillisecondsUntilNext()) {
+                if (*timerMs > 0) {
+                    auto timerDeadline = now + std::chrono::milliseconds(*timerMs);
+                    deadline = std::min(deadline, timerDeadline);
+                }
+                // If timer is overdue (≤0), don't adjust deadline - let system handle it
+            }
 
-            // Keep responsive for terminal input - much shorter cap than 500ms
-            auto maxDeadline = now + std::chrono::milliseconds(50); // Shorter for terminal responsiveness
-            deadline = std::min({deadline, statsDeadline, retryDeadline, maxDeadline});
+            // Apply quantum intelligently - only enforce when truly idle
+            // Skip quantum enforcement if:
+            // 1. We have recent serial activity, OR
+            // 2. Very short timers (≤2ms) are pending (gaming mode)
+            bool shortTimers = false;
+            if (auto timerMs = scheduler->getMillisecondsUntilNext()) {
+                // Disable quantum completely for very short timers to prevent gaming freezes
+                shortTimers = (*timerMs <= 2);
+            }
+
+#ifdef DEBUG_QUANTUM
+            // Debug output to understand quantum behavior
+            static auto lastDebug = now;
+            if (now - lastDebug > std::chrono::seconds(5)) {
+                auto nextTimerMs = scheduler->getMillisecondsUntilNext();
+                std::cerr << "[QUANTUM] Current: " << quantum.count() << "ms"
+                          << ", Serial: " << (recentSerial ? "YES" : "NO")
+                          << ", Behind: " << (fellBehind ? "YES" : "NO")
+                          << ", ShortTimer: " << (shortTimers ? "YES" : "NO")
+                          << ", NextTimer: " << (nextTimerMs ? std::to_string(*nextTimerMs) : "none") << "ms" << std::endl;
+                lastDebug = now;
+            }
+#endif
+
+            // Only use quantum during complete idle (no activity, no short timers)
+            if (!recentSerial && !shortTimers) {
+                auto quantumDeadline = now + quantum;
+                deadline = std::min(deadline, quantumDeadline);
+            }
+
+            // Force short deadline when we have short timers to bypass polling
+            if (shortTimers) {
+                if (auto timerMs = scheduler->getMillisecondsUntilNext()) {
+                    auto shortDeadline = now + std::chrono::milliseconds(*timerMs);
+                    deadline = std::min(deadline, shortDeadline);
+                }
+            }
+
+            // Rate-limited processing for rapid timers to prevent busy loops
+            if (shortTimers) {
+                rapidTimerCount++;
+                totalRapidTimers++;
+                auto timeSinceLastRapid = now - lastRapidTimer;
+
+                // Reset total counter every second
+                if (timeSinceLastRapid > std::chrono::seconds(1)) {
+                    totalRapidTimers = 0;
+                    lastRapidTimer = now;
+                }
+
+                // If we've had too many rapid timers recently, enforce a break
+                if (totalRapidTimers > 50) {
+#ifdef DEBUG_QUANTUM
+                    std::cerr << "[BYPASS] Rate limiting - too many rapid timers (" << totalRapidTimers << "), enforcing 5ms break" << std::endl;
+#endif
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    totalRapidTimers = 0;
+                    rapidTimerCount = 0;
+                    lastRapidTimer = now;
+                } else {
+#ifdef DEBUG_QUANTUM
+                    std::cerr << "[BYPASS] Short timer detected - processing immediately (" << rapidTimerCount << ")" << std::endl;
+#endif
+                    std::this_thread::sleep_for(std::chrono::microseconds(100));
+                }
+                continue;
+            } else {
+                // Reset counter when we get out of rapid timer mode
+                rapidTimerCount = 0;
+            }
 
             // Option B: Use timerfd + ppoll for unified waiting (reduces wakeups)
-            if (deadline > now) {
+            auto sleepDuration = deadline - now;
+            if (deadline > now && sleepDuration >= std::chrono::milliseconds(5)) {
+#ifdef DEBUG_QUANTUM
+                std::cerr << "[POLL] Entering polling with sleepDuration: "
+                          << std::chrono::duration_cast<std::chrono::milliseconds>(sleepDuration).count()
+                          << "ms" << std::endl;
+#endif
                 auto sleepStart = now;
 
                 // Set timerfd to expire at calculated deadline
@@ -409,9 +510,10 @@ int main(int argc, char* argv[]) {
                     // Fallback to sleep_until if timerfd fails
                     std::this_thread::sleep_until(deadline);
                 } else {
-                    // Use ppoll to wait on timerfd (single wait point for main loop)
+                    // Use ppoll to wait on timerfd with safety timeout to prevent hangs
                     pollfd pfd = { .fd = timerFd, .events = POLLIN, .revents = 0 };
-                    int result = ppoll(&pfd, 1, nullptr, nullptr);
+                    timespec timeout = { .tv_sec = 0, .tv_nsec = 50000000 }; // 50ms max timeout
+                    int result = ppoll(&pfd, 1, &timeout, nullptr);
 
 #ifdef DEBUG_WAKEUPS
                     if (result == 0) {
