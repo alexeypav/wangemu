@@ -26,6 +26,10 @@
 #include <mutex>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/timerfd.h>
+#include <poll.h>
+#include <errno.h>
+#include <cstring>
 
 // Global state for graceful shutdown
 static volatile bool running = true;
@@ -286,8 +290,25 @@ int main(int argc, char* argv[]) {
         
         std::cerr << "[INFO] Wang 2200 system ready for terminal connections\n";
         std::cerr << "[INFO] Press Ctrl+C to shutdown gracefully\n";
-        
-        // Main emulation loop with deadline-based sleeping
+
+        // Create timerfd for Option B: unified timer + poll approach
+        int timerFd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+        if (timerFd == -1) {
+            std::cerr << "[ERROR] Failed to create timerfd: " << strerror(errno) << "\n";
+            return 1;
+        }
+
+        // Helper lambda to set absolute deadline on timerfd
+        auto setTimerDeadline = [timerFd](std::chrono::steady_clock::time_point deadline) {
+            using namespace std::chrono;
+            auto ns = duration_cast<nanoseconds>(deadline.time_since_epoch()).count();
+            itimerspec its{};
+            its.it_value.tv_sec = ns / 1000000000LL;
+            its.it_value.tv_nsec = ns % 1000000000LL;
+            return timerfd_settime(timerFd, TFD_TIMER_ABSTIME, &its, nullptr) == 0;
+        };
+
+        // Main emulation loop with timerfd-based sleeping
         using clock = std::chrono::steady_clock;
         auto lastStatsTime = clock::now();
         auto lastRetryTime = clock::now();
@@ -342,12 +363,27 @@ int main(int argc, char* argv[]) {
             // Calculate next deadline as minimum of:
             // 1. Next fixed time slice (30ms)
             // 2. Next timer expiration
-            // 3. Stats/retry intervals
+            // 3. Stats/retry intervals (but capped)
             auto now = clock::now();
-            nextSlice += sliceDuration;
+
+            // Maintain steady cadence and avoid spin if we fell behind
+            // Safety: limit catch-up iterations to prevent infinite loops
+            if (nextSlice <= now) {
+                int catchupCount = 0;
+                do {
+                    nextSlice += sliceDuration;
+                    catchupCount++;
+                    if (catchupCount > 10) { // Safety limit
+                        nextSlice = now + sliceDuration;
+                        break;
+                    }
+                } while (nextSlice <= now);
+            } else {
+                nextSlice += sliceDuration;
+            }
             auto deadline = nextSlice;
 
-            // Consider next timer expiration
+            // Consider next timer expiration (with safety cap)
             if (auto timerMs = scheduler->getMillisecondsUntilNext()) {
                 auto timerDeadline = now + std::chrono::milliseconds(*timerMs);
                 deadline = std::min(deadline, timerDeadline);
@@ -357,14 +393,40 @@ int main(int argc, char* argv[]) {
             auto statsDeadline = lastStatsTime + std::chrono::seconds(30);
             auto retryDeadline = lastRetryTime + std::chrono::seconds(30);
 
-            // Don't let long intervals dominate the deadline
-            auto maxDeadline = now + std::chrono::milliseconds(100); // Cap at 100ms
+            // Keep responsive for terminal input - much shorter cap than 500ms
+            auto maxDeadline = now + std::chrono::milliseconds(50); // Shorter for terminal responsiveness
             deadline = std::min({deadline, statsDeadline, retryDeadline, maxDeadline});
 
-            // Sleep until deadline (or wake early on signals)
+            // Option B: Use timerfd + ppoll for unified waiting (reduces wakeups)
             if (deadline > now) {
                 auto sleepStart = now;
-                std::this_thread::sleep_until(deadline);
+
+                // Set timerfd to expire at calculated deadline
+                if (!setTimerDeadline(deadline)) {
+                    std::cerr << "[WARN] Failed to set timerfd deadline: " << strerror(errno) << "\n";
+                    // Fallback to sleep_until if timerfd fails
+                    std::this_thread::sleep_until(deadline);
+                } else {
+                    // Use ppoll to wait on timerfd (single wait point for main loop)
+                    pollfd pfd = { .fd = timerFd, .events = POLLIN, .revents = 0 };
+                    int result = ppoll(&pfd, 1, nullptr, nullptr);
+
+#ifdef DEBUG_WAKEUPS
+                    if (result == 0) {
+                        std::cerr << "[WAKE] timeout to deadline\n";
+                    } else if (result > 0 && (pfd.revents & POLLIN)) {
+                        std::cerr << "[WAKE] deadline timer fired\n";
+                    }
+#endif
+                    if (result > 0 && (pfd.revents & POLLIN)) {
+                        // Timer expired - acknowledge it by reading the expiration count
+                        uint64_t expirations;
+                        ssize_t s = read(timerFd, &expirations, sizeof(expirations));
+                        (void)s; // Suppress unused variable warning
+                    }
+                    // If result <= 0, we were interrupted by signal (which is fine)
+                }
+
                 auto wakeTime = clock::now();
 
                 // Debug wakeup reasons if enabled
@@ -383,7 +445,7 @@ int main(int argc, char* argv[]) {
 
                     std::cerr << "[DEBUG] Woke after " << actualSleep.count()
                               << "ms (expected " << expectedSleep.count()
-                              << "ms), reason: " << reason << std::endl;
+                              << "ms), reason: " << reason << " [timerfd]" << std::endl;
                 }
             }
 
@@ -450,7 +512,13 @@ int main(int argc, char* argv[]) {
         }
         
         std::cerr << "[INFO] Main loop exited, cleaning up sessions...\n";
-        
+
+        // Clean up timerfd
+        if (timerFd != -1) {
+            close(timerFd);
+            timerFd = -1;
+        }
+
         // Stop web server
 #ifndef DISABLE_WEBCONFIG
         if (webServer) {
