@@ -119,3 +119,7 @@ obj_terminal_server/*
 obj_terminal_server_aarch64/*
 *.zip
 screenshots/*
+src/headless/main/main_headless.cpp
+wangemu-terminal-server-aarch64
+PERFORMANCE_OPTIMIZATION.md
+wangemu-terminal-server
