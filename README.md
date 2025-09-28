@@ -1,26 +1,26 @@
 # Modified Wang Emulator
 
-This is a modified version of the original wangemu, forked from [jtbattle/wangemu](https://github.com/jtbattle/wangemu), added support to run as a "Real Terminal Server/Wang 2200 Multi User System" for connecting terminals over the host's serial ports and running on linux without gui/wxwidget dependencies.
+This is a modified version of the original wangemu, forked from [jtbattle/wangemu](https://github.com/jtbattle/wangemu), with added support to run as a "Real Terminal Server/Wang 2200 Multi User System" for connecting terminals over the host's serial ports and running on Linux without GUI/wxWidgets dependencies.
 
-For the GUI/Original version; added a Terminal mode (select the 2336DW in the CPU menu) to use the host's serial ports to connect to a real Wang2200 system
+For the GUI/Original version: added a Terminal mode (select the 2236DW in the CPU menu) to use the host's serial ports to connect to a real Wang 2200 system
 
 > **Disclaimer**: I used AI assistance quite extensively, otherwise this wouldn't be possible or would take me "years" to do this.
 
 
-## Run this on a Raspberry PI and connect a real Wang 2x36 terminal
-* Build the ARM version on linux (see below for build instructions)
+## Run this on a Raspberry Pi and connect a real Wang 2x36 terminal
+* Build the ARM version on Linux (see below for build instructions)
 * Copy over the binary to the Raspberry Pi
-* Plug in your serial adapters and connect terminal/s, up to 4 should work
+* Plug in your serial adapters and connect terminals, up to 4 should work
 * Run the executable `./wangemu-terminal-server-aarch64 --web-config`
 * Initial config is 1 terminal and using /dev/ttyUSB0 - if you have a terminal connected there it should work already
-* Configure the setup via web - http://(ip or hostname of the Pi):8080 - click apply and reset
+* Configure the setup via web - http://(IP or hostname of the Pi):8080 - click apply and reset
 * Settings should apply, any extra terminals should come up
 * For information on configuration, check the original documentation [emu.html](http://www.wang2200.org/emu.html)
-* wangemu.ini manual configuration should work the same, you will need to stop the emulator first otherwise it'll overwrite the .ini file on exit
-* For automatic startup on boot, copy over the setup-startup.sh and start-wangemu.sh script, run sudo ./setup-startup.sh
+* wangemu.ini manual configuration should work the same, you will need to stop the emulator first otherwise it will overwrite the .ini file on exit
+* For automatic startup on boot, copy over the setup-startup.sh and start-wangemu.sh scripts, run sudo ./setup-startup.sh
 
 
-###  Null modem wiring I've used for connecting a Terminal to the USB Serial Adaptor
+###  Null modem wiring I've used for connecting a terminal to the USB serial adapter
 
 | DB9 (PC/Emu) | DB25 (Wang 2X36DW) | Signal     | Notes                                     |
 |--------------|--------------------|------------|-------------------------------------------|
@@ -35,15 +35,18 @@ For the GUI/Original version; added a Terminal mode (select the 2336DW in the CP
 
 ## Terminal Server Version
 
-- **Serial communication** - connect multiple physical Wang 2X36 terminals via tty or windows com ports - I've had good results using the Unitek usb -> serial adaptors
+- **Serial communication** - connect multiple physical Wang 2X36 terminals via tty or Windows COM ports - I've had good results using the Unitek USB to serial adapters
 - **ARM64 support** - includes ARM build for Raspberry Pi, tested on Raspbian OS on a Pi Zero 2
-- **Configuration** - Added a web-based configuration interface for basic config - INI file config works as before too
+- **Configuration** - Added a web-based configuration interface for basic configuration - INI file configuration works as before too
 
-## Windows added Emulator Features
+## Windows Additional Emulator Features
 
 - **Serial communication** over the host's COM ports
 - **Terminal emulation** - use the emulator as a Wang terminal connected to a real Wang 2200 system  
 - **Physical terminal support** - connect a Wang terminal via the host's COM port to the emulator
+
+## Notes
+- I did attempt to use a PTY approach too, but I haven't got that working well at all, CPU utilization was always very high so would need someone knowledgeable in this space to do a good job.
 
 Building on Linux
 ----------
@@ -147,9 +150,7 @@ dir C:\wxWidgets-3.1.7\lib\vc_lib\mswud\wx\setup.h
 - Select Debug or Release configuration
 - Build the project
 
-The resulting `wangemu.exe` will be **completely standalone** - no DLL files needed for distribution!
-
-### Clean Commands
+### Clean Commands (for wxwidgets)
 ```bash
 # Clean only debug build
 nmake -f makefile.vc clean BUILD=debug
@@ -211,6 +212,7 @@ a barely functioning revision 0.5 to the current revision 3.0.
 Jim Battle is the primary author of the emulator, but Paul Heller
 was responsible for initially getting the emulator to work under
 MacOS and adding printer support.
+
 
 wangemu is just one tiny part of an extensive website concerning
 the Wang 2200 computer, located at
