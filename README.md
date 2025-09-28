@@ -45,6 +45,53 @@ For the GUI/Original version; added a Terminal mode (select the 2336DW in the CP
 - **Terminal emulation** - use the emulator as a Wang terminal connected to a real Wang 2200 system  
 - **Physical terminal support** - connect a Wang terminal via the host's COM port to the emulator
 
+Building on Linux
+----------
+
+### Prerequisites
+- GCC 7+ or Clang 5+ (C++17 support required)
+- Build tools: make, g++
+
+### GUI Version (requires wxWidgets)
+```bash
+# Install wxWidgets development packages
+sudo apt update
+sudo apt install libwxgtk3.0-gtk3-dev build-essential
+
+# Build GUI emulator
+make         # Default debug build
+make debug   # Debug build with symbols
+make opt     # Optimized release build
+```
+
+### Terminal Server (headless, no GUI dependencies)
+```bash
+# Build x86_64 terminal server
+make -f makefile.terminal-server         # Default debug build
+make -f makefile.terminal-server debug   # Debug build with symbols
+make -f makefile.terminal-server opt     # Optimized release build
+
+# Build ARM64 for Raspberry Pi (requires cross-compiler)
+sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+make -f makefile.terminal-server-aarch64         # Default debug build
+make -f makefile.terminal-server-aarch64 debug   # Debug build with symbols
+make -f makefile.terminal-server-aarch64 opt     # Optimized for Cortex-A53
+
+# Run terminal server
+./wangemu-terminal-server --web-config           # x86_64 version
+./wangemu-terminal-server-aarch64 --web-config   # ARM64 version
+
+# Command-line options
+--ini=PATH          # Load configuration from specific INI file (default: wangemu.ini)
+--web-config        # Enable web configuration interface on port 8080
+--web-port=PORT     # Web server port (default: 8080, enables web interface)
+--help, -h          # Show help message
+
+# Clean build artifacts
+make -f makefile.terminal-server clean
+make -f makefile.terminal-server-aarch64 clean
+```
+
 Building on Windows
 ----------
 
@@ -122,55 +169,6 @@ del Debug\*.obj Debug\*.pdb Debug\*.pch
 - **"Cannot open include file: 'wx/setup.h'"**: wxWidgets not built yet - run step 3
 - **Runtime library mismatch errors**: Ensure `RUNTIME_LIBS=static` was used in step 3
 - **"target does not exist" errors**: Clean completely and rebuild from step 3
-
-Building on Linux
-----------
-
-### Prerequisites
-- GCC 7+ or Clang 5+ (C++17 support required)
-- Build tools: make, g++
-
-### GUI Version (requires wxWidgets)
-```bash
-# Install wxWidgets development packages
-sudo apt update
-sudo apt install libwxgtk3.0-gtk3-dev build-essential
-
-# Build GUI emulator
-make         # Default debug build
-make debug   # Debug build with symbols
-make opt     # Optimized release build
-```
-
-### Terminal Server (headless, no GUI dependencies)
-```bash
-# Build x86_64 terminal server
-make -f makefile.terminal-server         # Default debug build
-make -f makefile.terminal-server debug   # Debug build with symbols
-make -f makefile.terminal-server opt     # Optimized release build
-
-# Build ARM64 for Raspberry Pi (requires cross-compiler)
-sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-make -f makefile.terminal-server-aarch64         # Default debug build
-make -f makefile.terminal-server-aarch64 debug   # Debug build with symbols
-make -f makefile.terminal-server-aarch64 opt     # Optimized for Cortex-A53
-
-# Run terminal server
-./wangemu-terminal-server --web-config           # x86_64 version
-./wangemu-terminal-server-aarch64 --web-config   # ARM64 version
-
-# Command-line options
---ini=PATH          # Load configuration from specific INI file (default: wangemu.ini)
---web-config        # Enable web configuration interface on port 8080
---web-port=PORT     # Web server port (default: 8080, enables web interface)
---help, -h          # Show help message
-
-# Clean build artifacts
-make -f makefile.terminal-server clean
-make -f makefile.terminal-server-aarch64 clean
-```
-
-
 
 Wang 2200 Emulator
 ==================
