@@ -998,7 +998,7 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     html << "                const warnIo = config['wangemu/config-0/misc']['warnio'];\n";
     html << "                document.getElementById('warnInvalidIo').checked = (warnIo === 'true' || warnIo === '1');\n";
     html << "                const diskRealtime = config['wangemu/config-0/misc']['disk_realtime'];\n";
-    html << "                const isRealtime = (diskRealtime === 'true' || diskRealtime === '1' || diskRealtime === undefined); // default true\n";
+    html << "                const isRealtime = (diskRealtime === '1' || diskRealtime === undefined); // default 1\n";
     html << "                document.getElementById('diskRealtime').checked = isRealtime;\n";
     html << "            }\n";
     html << "            \n";
@@ -1464,7 +1464,7 @@ WebConfigServer::HttpResponse WebConfigServer::handleGetRoot() {
     return response;
 }
 
-WebConfigServer::HttpResponse WebConfigServer::serveStaticFile(const std::string& path) {
+WebConfigServer::HttpResponse WebConfigServer::serveStaticFile(const std::string& /*path*/) {
     HttpResponse response;
     response.status = 404;
     response.body = "Static files not implemented";

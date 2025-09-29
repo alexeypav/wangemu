@@ -17,19 +17,19 @@
 
 // Display functions - no-ops for terminal server
 std::shared_ptr<CrtFrame>
-UI_displayInit(int screen_type, int io_addr, int term_num, crt_state_t *crt_state)
+UI_displayInit(int screen_type, int io_addr, int term_num, crt_state_t * /*crt_state*/)
 {
     fprintf(stderr, "[INFO] Terminal server: display init for term %d at I/O 0x%03X (screen type %d)\n", 
             term_num, io_addr, screen_type);
     return nullptr;  // terminal server mode doesn't create actual display
 }
 
-void UI_displayDestroy(CrtFrame *wnd)
+void UI_displayDestroy(CrtFrame * /*wnd*/)
 {
     // no-op for terminal server
 }
 
-void UI_displayDing(CrtFrame *wnd)
+void UI_displayDing(CrtFrame * /*wnd*/)
 {
     // no-op for terminal server (could print BEL to stderr if desired)
 }
@@ -46,7 +46,7 @@ void UI_setSimSeconds(unsigned long seconds, float relative_speed)
 }
 
 // Disk events
-void UI_diskEvent(int slot, int drive)
+void UI_diskEvent(int /*slot*/, int /*drive*/)
 {
     // no-op for terminal server, or could log
 }
@@ -58,12 +58,12 @@ std::shared_ptr<PrinterFrame> UI_printerInit(int io_addr)
     return nullptr;
 }
 
-void UI_printerDestroy(PrinterFrame *wnd)
+void UI_printerDestroy(PrinterFrame * /*wnd*/)
 {
     // no-op
 }
 
-void UI_printerChar(PrinterFrame *wnd, uint8 byte)
+void UI_printerChar(PrinterFrame * /*wnd*/, uint8 /*byte*/)
 {
     // no-op for terminal server (could write to file if needed)
 }
@@ -74,7 +74,7 @@ void UI_systemConfigDlg()
     fprintf(stderr, "[WARN] Terminal server: system configuration dialog requested but not available\n");
 }
 
-void UI_configureCard(IoCard::card_t card_type, CardCfgState *cfg)
+void UI_configureCard(IoCard::card_t /*card_type*/, CardCfgState * /*cfg*/)
 {
     fprintf(stderr, "[WARN] Terminal server: card configuration dialog requested but not available\n");
 }
