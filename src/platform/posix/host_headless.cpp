@@ -23,7 +23,7 @@ static std::map<std::string, std::map<std::string, std::string>> config_sections
 static std::string ini_filename = "wangemu.ini";
 
 // Helper to create config key for internal flat storage (backward compatibility)
-static std::string makeConfigKey(const std::string &subgroup, const std::string &key) {
+[[maybe_unused]] static std::string makeConfigKey(const std::string &subgroup, const std::string &key) {
     return subgroup + "/" + key;
 }
 
@@ -61,8 +61,8 @@ static void createTerminalServerDefaults() {
     config_sections["wangemu/config-0/cpu"]["speed"] = "regulated";
     
     // Misc settings
-    config_sections["wangemu/config-0/misc"]["disk_realtime"] = "true";
-    config_sections["wangemu/config-0/misc"]["warnio"] = "true";
+    config_sections["wangemu/config-0/misc"]["disk_realtime"] = "0";
+    config_sections["wangemu/config-0/misc"]["warnio"] = "1";
     
     // I/O slots - clear all slots first
     for (int slot = 0; slot < 8; slot++) {
@@ -389,7 +389,7 @@ void configWriteBool(const std::string &subgroup,
     if (config_sections.find(section) == config_sections.end()) {
         config_sections[section] = std::map<std::string, std::string>();
     }
-    config_sections[section][key] = val ? "true" : "false";
+    config_sections[section][key] = val ? "1" : "0";
 }
 
 // Forward declarations for terminal server build
@@ -397,17 +397,17 @@ class wxWindow;
 class wxRect;
 
 // Window geometry functions - no-ops for terminal server
-void configReadWinGeom(wxWindow *wxwin,
-                       const std::string &subgroup,
-                       wxRect *default_geom,
-                       bool client_size)
+void configReadWinGeom(wxWindow * /*wxwin*/,
+                       const std::string & /*subgroup*/,
+                       wxRect * /*default_geom*/,
+                       bool /*client_size*/)
 {
     // no-op in terminal server mode
 }
 
-void configWriteWinGeom(wxWindow *wxwin,
-                        const std::string &subgroup,
-                        bool client_size)
+void configWriteWinGeom(wxWindow * /*wxwin*/,
+                        const std::string & /*subgroup*/,
+                        bool /*client_size*/)
 {
     // no-op in terminal server mode
 }
@@ -459,8 +459,8 @@ std::string getAppHome()
 
 // ---- File request functions ----
 
-int fileReq(int requestor, const std::string &title,
-            bool readonly, std::string *fullpath)
+int fileReq(int /*requestor*/, const std::string &title,
+            bool /*readonly*/, std::string * /*fullpath*/)
 {
     // In terminal server mode, file requests are not interactive
     // Return cancel status

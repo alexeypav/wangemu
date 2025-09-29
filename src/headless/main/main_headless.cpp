@@ -592,8 +592,8 @@ int main(int argc, char* argv[]) {
                     std::cerr << "[INFO] Attempting to reconnect terminal " << i << " to " << portName << "\n";
                     
                     // Try to create and open serial port
-                    auto scheduler = termMux->getScheduler();
-                    auto serialPort = std::make_shared<SerialPort>(scheduler);
+                    auto reconnect_scheduler = termMux->getScheduler();
+                    auto serialPort = std::make_shared<SerialPort>(reconnect_scheduler);
                     SerialConfig serialConfig = config.terminals[i].toSerialConfig();
                     
                     if (serialPort->open(serialConfig)) {
