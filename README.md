@@ -55,19 +55,7 @@ Building on Linux
 - GCC 7+ or Clang 5+ (C++17 support required)
 - Build tools: make, g++
 
-### GUI Version (requires wxWidgets)
-```bash
-# Install wxWidgets development packages
-sudo apt update
-sudo apt install libwxgtk3.0-gtk3-dev build-essential
-
-# Build GUI emulator
-make         # Default debug build
-make debug   # Debug build with symbols
-make opt     # Optimized release build
-```
-
-### Terminal Server (headless, no GUI dependencies)
+### Terminal Server (headless, no GUI/wxWidgets dependencies)
 ```bash
 # Build x86_64 terminal server
 make -f makefile.terminal-server         # Default debug build
